@@ -57,8 +57,8 @@ ks = np.arange(-K, K + 1)
 
 # Phi = np.array([np.exp(-1j * k * whitenoise_z_vals) for k in ks]).T
 
-# Psi = np.array([np.exp(-1j * k * whitenoise_train_time) for k in ks]).T
-Psi = np.array([np.exp(-1j * np.pi * k * whitenoise_train_time) for k in ks]).T
+# Psi = np.array([np.exp(-1j * k * whitenoise_z_vals) for k in ks]).T
+Psi = np.array([np.exp(-1j * np.pi * k * whitenoise_z_vals) for k in ks]).T
 
 w_vec = zeta_derivative(whitenoise_t_ref, whitenoise_train_time, tau)
 
@@ -69,8 +69,8 @@ ck /= len(ck)
 # Reconstruct F(z) using the Fourier coefficients
 whitenoise_f_vals_hat = np.sum(
     [
-        #   ck[m] * np.exp(1j * ks[m] * whitenoise_train_time)
-        ck[m] * np.exp(1j * np.pi * ks[m] * whitenoise_train_time)
+        # ck[m] * np.exp(1j * ks[m] * whitenoise_z_vals)
+        ck[m] * np.exp(1j * np.pi * ks[m] * whitenoise_z_vals)
         for m in range(len(ks))
     ],
     axis=0,
@@ -158,7 +158,7 @@ lorenz63_f_vals = np.asarray(lorenz63_train_data, dtype=np.complex128)
 # Define the Fourier basis range
 K = 1000
 ks = np.arange(-K, K + 1)
-tau = 5
+tau = 1
 
 # Phi = np.array([np.exp(-1j * k * lorenz63_z_vals) for k in ks]).T
 Psi = np.array([np.exp(-1j * k * lorenz63_train_timestamps) for k in ks]).T
