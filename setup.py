@@ -86,7 +86,7 @@ setup(
     description="Research project on hippocampus with associated products.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/research-hippo-with-products",
+    url="https://github.com/stash-196/research-hippo-with-products",
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",

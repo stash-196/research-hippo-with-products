@@ -3,8 +3,10 @@ import os
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
+from research_hippo_with_products.utils import find_project_root
 
 
+# %%
 # Define transformation functions
 def zeta(t, s, tau=1):
     return 2 * np.exp((s - t) / tau) - 1
