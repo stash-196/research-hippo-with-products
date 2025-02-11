@@ -160,7 +160,9 @@ def compute_basis(x, ks, basis_type="fourier"):
 
 
 # Fourier/polynomial transform and reconstruction
-def compute_coefficients(signal, time, z_vals, ks, weights, domain_name, basis_type="fourier"):
+def compute_coefficients(
+    signal, time, z_vals, ks, weights, domain_name, basis_type="fourier"
+):
     """
     Compute coefficients for a given signal in the z domain using the chosen basis.
     """
@@ -211,12 +213,20 @@ def process_signal(
     z_vals = zeta(t_ref, time, tau)
     weights = zeta_derivative(t_ref, time, tau)
 
-    # Compute coefficients
-    ck, Bases = compute_coefficients(
-        signal, time, z_vals, ks, weights, domain_name, basis_type
-    )
+    scaled_x = time if domain_name == "s" else z_vals
 
-    # Normalize basis if necessary
+    # Compute coefficients
+    if domain_name == "s":
+        ck, Bases = compute_coefficients(
+            signal, scaled_x, ks, weights, domain_name, basis_type
+        )
+    elif domain_name == "z":
+        ck, Bases = compute_coefficients(
+            signal, scaled_x, ks, weights, domain_name, basis_type
+        )
+
+        # Normalize basis if necessary
+
     if basis_type == "legendre":
         Bases = normalize_basis(Bases, ks, basis_type)
 
@@ -227,10 +237,11 @@ def process_signal(
     plot_reconstructed_signal(z_vals, signal, reconstructed, data_name, "z")
     plot_reconstructed_signal(time, signal, reconstructed, data_name, "s")
 
-    plot_signal(z_vals, signal, data_name, domain_name="z")
-    plot_signal(time, signal, data_name, domain_name="s")
-    plot_signal(time, weights, "w", domain_name="s")
-    plot_signal(ks, ck, "ck", domain_name="frequency")
+    # if domain_name == "z":
+    #     plot_signal(z_vals, signal, data_name, domain_name="z")
+    # elif domain_name == "s":
+    #     plot_signal(time, signal, data_name, domain_name="s")
+    #     plot_signal(time, weights, "w", domain_name="s")
 
     # Plot basis functions
     plot_basis_functions(
@@ -243,7 +254,7 @@ def process_signal(
     )
 
     # Plot reconstruction error
-    plot_reconstruction_error(signal, reconstructed, data_name, domain_name)
+    # plot_reconstruction_error(signal, reconstructed, data_name, domain_name)
 
 
 # Load data
@@ -292,14 +303,15 @@ process_signal(
     "s",
 )
 
-process_signal(
-    lorenz63_train_time,
-    lorenz63_train_data,
-    lorenz63_t_ref,
-    ks,
-    tau,
-    "fourier",
-    "Lorenz63",
-    "s",
-)
+
+# process_signal(
+#     lorenz63_train_time,
+#     lorenz63_train_data,
+#     lorenz63_t_ref,
+#     ks,
+#     tau,
+#     "fourier",
+#     "Lorenz63",
+#     "z",
+# )
 # %%
