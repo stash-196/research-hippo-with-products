@@ -151,8 +151,15 @@ def compute_basis(x, ks, basis_type="fourier"):
     - Basis matrix with columns as basis functions evaluated at 'x'
     """
     if basis_type == "fourier":
+        # Construct real Fourier basis (excluding DC term for sine)
+        Bases_cos = np.cos(np.pi * np.outer(ks, x)).T  # Cosine basis
+        Bases_sin = np.sin(
+            np.pi * np.outer(ks[1:], x)
+        ).T  # Sine basis (excluding DC term)
+        # Concatenate all basis functions
+        return np.hstack([Bases_cos, Bases_sin])
         # Scale frequencies with pi to match the standardized domain [-1, 1]
-        return np.exp(-1j * np.pi * np.outer(ks, x)).T
+        # return np.exp(-1j * np.pi * np.outer(ks, x)).T
     elif basis_type == "legendre":
         return np.array([legendre(k)(x) for k in ks]).T
     else:
@@ -167,13 +174,18 @@ def compute_coefficients(
     Compute coefficients for a given signal in the z domain using the chosen basis.
     """
 
-    Psi = compute_basis(z_vals, ks, basis_type)
-
-    delta_s = time[1] - time[0]  # If uniform
-    ck = (signal * weights) @ Psi * delta_s
-    # ck = (signal * weights) @ Psi
-    return ck, Psi
-    # return ck / len(ck), Psi
+    if domain_name == "s":
+        Psi = compute_basis(z_vals, ks, basis_type)
+        delta_s = time[1] - time[0]  # If uniform
+        ck = (signal * weights) @ Psi * delta_s
+        # ck = (signal * weights) @ Psi
+        return ck, Psi
+    elif domain_name == "z":
+        Phi = compute_basis(time, ks, basis_type)
+        # compute non-uniform delta_z
+        delta_z = np.diff(z_vals)
+        ck = signal @ Phi * delta_z
+        return ck, Phi
 
 
 def normalize_basis(Bases, ks, basis_type="legendre"):
@@ -207,22 +219,20 @@ def normalize_basis(Bases, ks, basis_type="legendre"):
 
 # Process whitenoise data
 def process_signal(
-    time, signal, t_ref, ks, tau, basis_type, data_name="Whitenoise", domain_name="s"
+    time, signal, t_ref, K, tau, basis_type, data_name="Whitenoise", domain_name="s"
 ):
-
+    ks = np.arange(K + 1)
     z_vals = zeta(t_ref, time, tau)
     weights = zeta_derivative(t_ref, time, tau)
-
-    scaled_x = time if domain_name == "s" else z_vals
 
     # Compute coefficients
     if domain_name == "s":
         ck, Bases = compute_coefficients(
-            signal, scaled_x, ks, weights, domain_name, basis_type
+            signal, time, z_vals, ks, weights, domain_name, basis_type
         )
     elif domain_name == "z":
         ck, Bases = compute_coefficients(
-            signal, scaled_x, ks, weights, domain_name, basis_type
+            signal, time, z_vals, ks, weights, domain_name, basis_type
         )
 
         # Normalize basis if necessary
@@ -273,7 +283,6 @@ with open(lorenz63_data_path, "rb") as f:
 
 # Parameters
 K = 1000  # Number of Fourier basis functions
-ks = np.arange(-K, K + 1)  # Fourier indices
 tau = 2  # Scale parameter
 
 # Process whitenoise and Lorenz63
@@ -296,7 +305,7 @@ process_signal(
     whitenoise_train_time,
     whitenoise_train_data,
     whitenoise_t_ref,
-    ks,
+    K,
     tau,
     "fourier",
     "Whitenoise",
