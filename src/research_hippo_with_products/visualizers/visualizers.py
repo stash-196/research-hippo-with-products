@@ -39,9 +39,8 @@ def plot_basis_functions(
     data_name,
     domain_name="s",
     basis_type="fourier",
-    num_functions_front=1,
-    num_functions_back=1,
-    num_functions_middle=1,
+    num_functions_front=None,
+    num_functions_back=None,
 ):
     """
     Plot a subset of basis functions against the domain, including
@@ -58,24 +57,24 @@ def plot_basis_functions(
     - num_functions_back: Number of basis functions to plot from the end
     """
     plt.figure(figsize=(12, 8))
+    N = Bases.shape[1]
 
-    # Select indices for front and back
-    front_indices = np.arange(num_functions_front)
-    back_indices = np.arange(len(ks) - num_functions_back, len(ks))
-    middle_indices = np.arange(
-        len(ks) // 2 - num_functions_middle, len(ks) // 2 + num_functions_middle
-    )
-
-    # Combine front and back indices
-    selected_indices = np.concatenate((front_indices, back_indices, middle_indices))
+    if num_functions_front is None and num_functions_back is None:
+        selected_indices = np.arange(N)
+    elif num_functions_front is None:
+        selected_indices = np.arange(N - num_functions_back, N)
+    elif num_functions_back is None:
+        selected_indices = np.arange(num_functions_front)
+    else:
+        selected_indices = np.concatenate(
+            (np.arange(num_functions_front), np.arange(N - num_functions_back, N))
+        )
 
     for i in selected_indices:
         k = ks[i]
         if basis_type == "fourier":
-            label_real = f"Re[φ_{k}({domain_name})]"
-            label_imag = f"Im[φ_{k}({domain_name})]"
-            plt.plot(x, np.real(Bases[:, i]), label=label_real)
-            plt.plot(x, np.imag(Bases[:, i]), linestyle="--", label=label_imag)
+            label = f"φ_{k}({domain_name})"
+            plt.plot(x, Bases[:, i], label=label)
         elif basis_type == "polynomial":
             label = f"φ_{k}({domain_name})"
             plt.plot(x, Bases[:, i], label=label)
@@ -87,7 +86,7 @@ def plot_basis_functions(
     plt.ylabel("Basis Function Value")
     plt.title(
         f"{data_name} Basis Functions in {domain_name} Domain ({basis_type.capitalize()})\n"
-        f"First {num_functions_front}, Middle {num_functions_middle}, and Last {num_functions_back} Functions"
+        f"First {num_functions_front}, and Last {num_functions_back} Functions"
     )
     plt.grid(True)
     plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")  # Place legend outside plot
