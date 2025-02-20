@@ -58,9 +58,10 @@ def plot_basis_functions(
     """
     plt.figure(figsize=(12, 8))
     N = Bases.shape[1]
-
+    print("num to vis", num_functions_back, num_functions_front)
     if num_functions_front is None and num_functions_back is None:
         selected_indices = np.arange(N)
+        print("printing all basis functions")
     elif num_functions_front is None:
         selected_indices = np.arange(N - num_functions_back, N)
     elif num_functions_back is None:
@@ -89,7 +90,6 @@ def plot_basis_functions(
         f"First {num_functions_front}, and Last {num_functions_back} Functions"
     )
     plt.grid(True)
-    plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")  # Place legend outside plot
     plt.tight_layout()
     plt.show()
 

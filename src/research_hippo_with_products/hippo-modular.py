@@ -62,7 +62,7 @@ def compute_basis(x, ks, basis_type="fourier"):
 
 # Fourier/polynomial transform and reconstruction
 def compute_coefficients(
-    signal, time, z_vals, ks, weights, domain_name, basis_type="fourier"
+    signal, time, z_vals, ks, weights, domain_name, basis_type="fourier", verbose=False
 ):
     """
     Compute coefficients for a given signal in the z domain using the chosen basis.
@@ -70,16 +70,23 @@ def compute_coefficients(
 
     if domain_name == "s":
         Psi = compute_basis(z_vals, ks, basis_type)
-        delta_s = time[1] - time[0] if len(time) > 1 else 1
-        T = time[-1] - time[0]
-        print("T: ", T)
-        print("delta_s: ", delta_s)
-        print("len(time): ", len(time))    
-        print("T/delta_s vs len(time): ", T/delta_s, " : ", len(time))
-        print("1/N: ", 1/len(time))
-        ck = (signal * weights) @ Psi / len(time)
-        # ck = (signal * weights) @ Psi
-        return ck, Psi
+        if basis_type == "fourier":
+            delta_s = time[1] - time[0] if len(time) > 1 else 1
+            T = time[-1] - time[0]
+            if verbose:
+                print("T: ", T)
+                print("delta_s: ", delta_s)
+                print("len(time): ", len(time))    
+                print("T/delta_s vs len(time): ", T/delta_s, " : ", len(time))
+                print("1/N: ", 1/len(time))
+                print("weights: ", weights)
+            ck = (signal * weights) @ Psi / len(time)
+            # ck = (signal * weights) @ Psi
+            return ck, Psi
+        elif basis_type == "legendre":
+            import numpy.polynomial.legendre as leg
+            ck = leg.legfit(z_vals, signal, len(ks) - 1)
+            return ck, Psi
     elif domain_name == "z":
         Phi = compute_basis(time, ks, basis_type)
         # compute non-uniform delta_z
@@ -141,12 +148,6 @@ def process_signal(
     plot_reconstructed_signal(z_vals, signal, reconstructed, data_name, "z")
     plot_reconstructed_signal(time, signal, reconstructed, data_name, "s")
 
-    # if domain_name == "z":
-    #     plot_signal(z_vals, signal, data_name, domain_name="z")
-    # elif domain_name == "s":
-    #     plot_signal(time, signal, data_name, domain_name="s")
-    #     plot_signal(time, weights, "w", domain_name="s")
-
     # Plot basis functions
     if basis_type == "fourier":
         ks_plot = ks[ks >= 0]
@@ -192,12 +193,11 @@ with open(whitenoise_data_path, "rb") as f:
 with open(lorenz63_data_path, "rb") as f:
     lorenz63_data = pickle.load(f)
 
+# %%
 # Parameters
 # nyquist
-tau = 2  # Scale parameter
+tau = 1  # Scale parameter
 
-
-# %%
 # Process whitenoise and Lorenz63
 whitenoise_half_point = len(whitenoise_data["time"]) // 2
 whitenoise_t_ref = whitenoise_data["time"][whitenoise_half_point]
@@ -208,10 +208,14 @@ whitenoise_train_data = np.asarray(
 whitenoise_delta_t = whitenoise_train_time[1] - whitenoise_train_time[0]
 whitenoise_nyquist = 1 / (2 * whitenoise_delta_t)
 # set K based on nyquist
+basis_type = "fourier"
+basis_type = "legendre"
 N  = len(whitenoise_train_time)
 T = whitenoise_train_time[1] - whitenoise_train_time[0]
-
-ks = np.arange(-N//2+1, N//2)/N/T
+if basis_type == "fourier":
+    ks = np.arange(-N//2+1, N//2)/N/T
+elif basis_type == "legendre":
+    ks = np.arange(N//3)
 # K = 40
 
 
@@ -221,7 +225,7 @@ process_signal(
     whitenoise_t_ref,
     ks,
     tau,
-    "fourier",
+    basis_type,
     "Whitenoise",
     "s",
 )
