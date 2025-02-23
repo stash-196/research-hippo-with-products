@@ -2,7 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def plot_reconstructed_signal(x, original, reconstructed, data_name, domain_name="s"):
+def plot_reconstructed_signal(
+    x, original, reconstructed, data_name, domain_name="s", title=""
+):
     plt.figure(figsize=(10, 6))
     plt.plot(x, original, label=f"Original {data_name} f({domain_name})")
     plt.plot(
@@ -14,7 +16,7 @@ def plot_reconstructed_signal(x, original, reconstructed, data_name, domain_name
     )
     plt.xlabel(f"{domain_name}")
     plt.ylabel(f"{data_name} f({domain_name})")
-    plt.title(f"Original vs Reconstructed {data_name} in {domain_name} domain")
+    plt.title(title + f"Original vs Reconstructed {data_name} in {domain_name} domain")
     plt.grid(True)
     plt.legend()
     plt.show()

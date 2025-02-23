@@ -76,16 +76,15 @@ def compute_coefficients(
             if verbose:
                 print("T: ", T)
                 print("delta_s: ", delta_s)
-                print("len(time): ", len(time))
-                print("T/delta_s vs len(time): ", T / delta_s, " : ", len(time))
-                print("1/N: ", 1 / len(time))
+                print("len(time): ", len(time))    
+                print("T/delta_s vs len(time): ", T/delta_s, " : ", len(time))
+                print("1/N: ", 1/len(time))
                 print("weights: ", weights)
             ck = (signal * weights) @ Psi / len(time)
             # ck = (signal * weights) @ Psi
             return ck, Psi
         elif basis_type == "legendre":
             import numpy.polynomial.legendre as leg
-
             ck = leg.legfit(z_vals, signal, len(ks) - 1)
             return ck, Psi
     elif domain_name == "z":
@@ -94,6 +93,35 @@ def compute_coefficients(
         delta_z = np.diff(z_vals)
         ck = signal @ Phi * delta_z
         return ck, Phi
+
+
+def normalize_basis(Bases, ks, basis_type="legendre"):
+    """
+    Normalize the basis functions based on their type.
+
+    Parameters:
+    - Bases: Basis matrix (columns correspond to basis functions)
+    - ks: Basis indices
+    - basis_type: "fourier", "polynomial", or "legendre"
+
+    Returns:
+    - Normalized basis matrix
+    """
+    if basis_type == "fourier":
+        # For Fourier basis, normalization can be handled during basis computation
+        # Assuming the basis functions are already normalized
+        return Bases
+    elif basis_type == "polynomial":
+        # Orthogonalize if necessary (e.g., using Gram-Schmidt)
+        # For simplicity, returning as is
+        return Bases
+    elif basis_type == "legendre":
+        # Normalize based on Legendre orthogonality
+        # Integral of P_k(x)^2 over [-1,1] is 2 / (2k + 1)
+        normalization_factors = np.sqrt(2 / (2 * ks + 1))
+        return Bases * normalization_factors[:, np.newaxis]
+    else:
+        return Bases
 
 
 # Process whitenoise data
@@ -147,77 +175,79 @@ def process_signal(
     )
     compare_stat_signal(signal, reconstructed, data_name, "Reconstructed")
 
+
     # Plot reconstruction error
     # plot_reconstruction_error(signal, reconstructed, data_name, domain_name)
 
 
-if __name__ == "__main__":
-    # Load data
-    root_dir = find_project_root(__file__)
-    data_dir = os.path.join(root_dir, "data")
+# Load data
+root_dir = find_project_root(__file__)
+data_dir = os.path.join(root_dir, "data")
 
-    whitenoise_data_path = os.path.join(data_dir, "whitenoise_samples.pkl")
-    lorenz63_data_path = os.path.join(data_dir, "lorenz63_samples.pkl")
+whitenoise_data_path = os.path.join(data_dir, "whitenoise_samples.pkl")
+lorenz63_data_path = os.path.join(data_dir, "lorenz63_samples.pkl")
 
-    with open(whitenoise_data_path, "rb") as f:
-        whitenoise_data = pickle.load(f)
+with open(whitenoise_data_path, "rb") as f:
+    whitenoise_data = pickle.load(f)
 
-    with open(lorenz63_data_path, "rb") as f:
-        lorenz63_data = pickle.load(f)
+with open(lorenz63_data_path, "rb") as f:
+    lorenz63_data = pickle.load(f)
 
-    # %%
-    # Parameters
-    # nyquist
-    tau = 1  # Scale parameter
+# %%
+# Parameters
+# nyquist
+tau = 1  # Scale parameter
 
-    # Process whitenoise and Lorenz63
-    whitenoise_half_point = len(whitenoise_data["time"]) // 2
-    whitenoise_t_ref = whitenoise_data["time"][whitenoise_half_point]
-    whitenoise_train_time = whitenoise_data["time"][:whitenoise_half_point]  # s_i
-    whitenoise_train_data = np.asarray(
-        whitenoise_data["data"][:whitenoise_half_point], dtype=np.complex128
-    )  # f_i in the original domain
-    whitenoise_delta_t = whitenoise_train_time[1] - whitenoise_train_time[0]
-    whitenoise_nyquist = 1 / (2 * whitenoise_delta_t)
-    # set K based on nyquist
-    basis_type = "legendre"
-    basis_type = "fourier"
-    N = len(whitenoise_train_time)
-    T = whitenoise_train_time[1] - whitenoise_train_time[0]
-    if basis_type == "fourier":
-        ks = np.arange(-N // 2 + 1, N // 2) / N / T
-    elif basis_type == "legendre":
-        ks = np.arange(N // 3)
-    # K = 40
+# Process whitenoise and Lorenz63
+whitenoise_half_point = len(whitenoise_data["time"]) // 2
+whitenoise_t_ref = whitenoise_data["time"][whitenoise_half_point]
+whitenoise_train_time = whitenoise_data["time"][:whitenoise_half_point]  # s_i
+whitenoise_train_data = np.asarray(
+    whitenoise_data["data"][:whitenoise_half_point], dtype=np.complex128
+)  # f_i in the original domain
+whitenoise_delta_t = whitenoise_train_time[1] - whitenoise_train_time[0]
+whitenoise_nyquist = 1 / (2 * whitenoise_delta_t)
+# set K based on nyquist
+basis_type = "fourier"
+basis_type = "legendre"
+N  = len(whitenoise_train_time)
+T = whitenoise_train_time[1] - whitenoise_train_time[0]
+if basis_type == "fourier":
+    ks = np.arange(-N//2+1, N//2)/N/T
+elif basis_type == "legendre":
+    ks = np.arange(N//3)
+# K = 40
 
-    process_signal(
-        whitenoise_train_time,
-        whitenoise_train_data,
-        whitenoise_t_ref,
-        ks,
-        tau,
-        basis_type,
-        "Whitenoise",
-        "s",
-    )
 
-    # lorenz63_half_point = len(lorenz63_data["time"]) // 2
-    # lorenz63_t_ref = lorenz63_data["time"][lorenz63_half_point]
-    # lorenz63_train_time = lorenz63_data["time"][:lorenz63_half_point]  # s_i
-    # lorenz63_train_data = np.asarray(lorenz63_data["data"], dtype=np.complex128)[
-    #     :lorenz63_half_point,
-    #     0,
-    # ]  # f_i in the original domain
+process_signal(
+    whitenoise_train_time,
+    whitenoise_train_data,
+    whitenoise_t_ref,
+    ks,
+    tau,
+    basis_type,
+    "Whitenoise",
+    "s",
+)
 
-    # process_signal(
-    #     lorenz63_train_time,
-    #     lorenz63_train_data,
-    #     lorenz63_t_ref,
-    #     ks,
-    #     tau,
-    #     "fourier",
-    #     "Lorenz63",
-    #     "z",
-    # )
+# lorenz63_half_point = len(lorenz63_data["time"]) // 2
+# lorenz63_t_ref = lorenz63_data["time"][lorenz63_half_point]
+# lorenz63_train_time = lorenz63_data["time"][:lorenz63_half_point]  # s_i
+# lorenz63_train_data = np.asarray(lorenz63_data["data"], dtype=np.complex128)[
+#     :lorenz63_half_point,
+#     0,
+# ]  # f_i in the original domain
 
-    # %%
+# process_signal(
+#     lorenz63_train_time,
+#     lorenz63_train_data,
+#     lorenz63_t_ref,
+#     ks,
+#     tau,
+#     "fourier",
+#     "Lorenz63",
+#     "z",
+# )
+
+
+# %%
