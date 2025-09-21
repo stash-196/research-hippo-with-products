@@ -337,6 +337,7 @@ class HiPPO(nn.Module):
         A = A + np.eye(N)*c
         self.A = A
         self.B = B.squeeze(-1)
+        print("B:", self.B)
         self.measure_fn = measure(method)
 
         C = np.ones((1, N))
@@ -367,9 +368,12 @@ class HiPPO(nn.Module):
 
         c = torch.zeros(u.shape[1:]).to(inputs)
         cs = []
+        time_start = time.time()
         for f in inputs:
             c = F.linear(c, self.dA) + self.dB * f
             cs.append(c)
+        time_end = time.time()
+        print(f"HiPPO(time-invariant) Total computation time for forward pass: {time_end - time_start:.2f} seconds")
         return torch.stack(cs, dim=0)
 
     def reconstruct(self, c, evals=None): # TODO take in a times array for reconstruction
@@ -378,7 +382,10 @@ class HiPPO(nn.Module):
         output: (..., L,)
         """
         if evals is not None:
+            time_start = time.time()
             eval_matrix = basis(self.method, self.N, evals)
+            time_end = time.time()
+            print(f"HiPPO(time-invariant) reconstruct() Total computation time for eval_matrix: {time_end - time_start:.2f} seconds")
         else:
             eval_matrix = self.eval_matrix
 
@@ -404,65 +411,67 @@ def phi(n, z):
     y = 2 * z - 1
     return np.sqrt(2 * n + 1) * legendre(n)(y)
 
+# Derivative of phi (for Legendre)
+def phi_prime(n, z):
+    y = 2 * z - 1
+    p_n = legendre(n)
+    p_prime_n = p_n.deriv()
+    return np.sqrt(2 * n + 1) * p_prime_n(y) * 2  # Chain rule dy/dz = 2
+
+
 # Warp functions for HiPPO-LegS
 def sigma(t, s):
     return np.exp(s - t)
 
+
 def sigma_inv(t, z):
     return t + np.log(z)
 
+
 def get_gauss_quadrature(order, a=0, b=1):
     """Get Gauss-Legendre nodes and weights on interval [a, b]."""
-    x, w = roots_legendre(order)  # On [-1, 1]
+    x, w = roots_legendre(order)
     z = a + (b - a) * (x + 1) / 2
     w = w * (b - a) / 2
     return z, w
 
-def vectorized_phi(n_values, z_values):
-    """
-    Evaluates all basis functions on all z values in a vectorized way.
 
-    Args:
-    n_values (1D array): Array of basis indices [0, 1, ..., N-1].
-    z_values (1D array): Array of points to evaluate at [z_0, ..., z_k-1].
+# Generic vectorized evaluator
+def vectorized_basis(basis_func, n_values, z_values):
+    k = len(z_values)
+    N = len(n_values)
+    vals = np.zeros((k, N))
+    for j, n in enumerate(n_values):
+        vals[:, j] = basis_func(n, z_values)
+    return vals
 
-    Returns:
-    (k, N) array where result[i, j] = phi(j, z_values[i]).
-    """
-    y = 2 * z_values - 1  # Map z from [0, 1] to [-1, 1]
-    legendre_evals = eval_legendre(n_values[np.newaxis, :], y[:, np.newaxis])
-    normalization = np.sqrt(2 * n_values + 1)
-    return normalization * legendre_evals
-
-# Lag operator transition matrices
 def lag_transition(N, dt=1.0, quad_order=None):
     if quad_order is None:
-        quad_order = 2 * N  # Exact for degree < 2N (safe for Legendre products up to degree 2N-2)
+        quad_order = 2 * N
 
-    # Direct computation of A_infty via quadrature on [0,1]
-    z_nodes_a, z_weights_a = get_gauss_quadrature(quad_order, 0, 1)
     n_vals = np.arange(N)
-    eval_n = vectorized_phi(n_vals, z_nodes_a)  # (quad_order, N)
-    warped_z = np.exp(-dt) * z_nodes_a
-    eval_m = vectorized_phi(n_vals, warped_z)  # (quad_order, N)
 
+    # Compute A_gen via quadrature on [0,1]
+    z_nodes, z_weights = get_gauss_quadrature(quad_order, 0, 1)
+    phi_vals = vectorized_basis(phi, n_vals, z_nodes)  # (k, N)
+    phi_prime_vals = vectorized_basis(phi_prime, n_vals, z_nodes)  # (k, N)
+    A_gen = np.einsum(
+        "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_prime_vals
+    )
 
-
-    # Fix: Sum over quadrature points to get (N, N)
-    A_infty_vec = np.einsum('i,ik,il->kl', z_weights_a, eval_n, eval_m)
     start_time = time.time()
-    print(f"\nA_infty computed via vectorized Gauss quadrature (order {quad_order}):")
-    print(np.round(A_infty_vec, 3))
+    print(f"\nA_gen computed via vectorized Gauss quadrature (order {quad_order}):")
+    print(np.round(A_gen, 3))
     end_time = time.time()
-    print(f"Total computation time for A_infty: {end_time - start_time:.2f} seconds")
+    print(f"Total computation time for A_gen: {end_time - start_time:.2f} seconds")
+
+    # A_infty = expm(dt * A_gen)  # If needed
 
     # Compute B via quadrature on [exp(-dt), 1]
     z_min = np.exp(-dt)
     z_max = 1.0
     z_nodes_b, z_weights_b = get_gauss_quadrature(quad_order, z_min, z_max)
-    basis_evals_b = vectorized_phi(n_vals, z_nodes_b)  # (quad_order, N)
-
-    # B = basis_evals_b.T @ z_weights_b (N, quad_order) @ (quad_order,) -> (N,)
+    basis_evals_b = vectorized_basis(phi, n_vals, z_nodes_b)  # (k, N)
     B_zoh_vec = basis_evals_b.T @ z_weights_b
 
     start_time = time.time()
@@ -471,11 +480,11 @@ def lag_transition(N, dt=1.0, quad_order=None):
     end_time = time.time()
     print(f"Total computation time for B: {end_time - start_time:.2f} seconds")
 
-    return A_infty_vec, B_zoh_vec
+    return A_gen, B_zoh_vec  # Return A_gen for discretization
 
 class LagHiPPO(nn.Module):
     """ Lag Operator-based time invariant x_{t+1} = A x_t + B u_t """
-    def __init__(self, N, dt=1.0, T=1.0, c=0.0):
+    def __init__(self, N, dt=1.0, T=1.0, c=0.0, discretization='bilinear'):
         """
         N: the order of the HiPPO projection
         dt: discretization step size
@@ -489,7 +498,20 @@ class LagHiPPO(nn.Module):
         self.c = c
 
         # Compute lag-based transition matrices
-        dA, dB = lag_transition(N, dt=self.dt)
+        A_gen, B_zoh = lag_transition(N, dt=self.dt)
+
+        A_HiPPO = (A_gen - np.eye(N)).T
+
+        self.A = A_HiPPO
+        self.B = B_zoh
+        self.measure_fn = measure('legs')
+
+        C = np.ones((1, N))
+        D = np.zeros((1,))
+        dA, dB, _, _, _ = signal.cont2discrete((A_HiPPO, B_zoh, C, D), dt=dt, method=discretization)
+
+        dB = dB
+
 
         self.register_buffer('dA', torch.Tensor(dA))  # (N, N)
         self.register_buffer('dB', torch.Tensor(dB))  # (N,)
@@ -499,15 +521,20 @@ class LagHiPPO(nn.Module):
         self.eval_matrix = self._compute_eval_matrix()  # (len(vals), N)
 
         # Measure for truncation (exponential decay)
+        time_start = time.time()
         self.measure = self._compute_measure()
+        time_end = time.time()
+        print(f"LagHiPPO Total computation time for measure: {time_end - time_start:.2f} seconds")
+
 
     def _compute_eval_matrix(self):
-        z_warped = np.exp(-self.vals)
-        eval_matrix = np.zeros((len(self.vals), self.N))
-        for k in range(len(self.vals)):
-            for n in range(self.N):
-                eval_matrix[k, n] = phi(n, z_warped[k]) * np.exp(-self.c * self.vals[k])
+        z_warped = np.exp(-self.vals)  # (len(vals),)
+        n_vals = np.arange(self.N)
+        eval_matrix = vectorized_basis(phi, n_vals, z_warped)  # (len(vals), N)
+        decay_factor = np.exp(-self.c * self.vals)  # (len(vals),)
+        eval_matrix = eval_matrix * decay_factor[:, np.newaxis]  # Broadcast decay to
         return torch.Tensor(eval_matrix)
+
 
     def _compute_measure(self):
         return np.exp(-self.vals)
@@ -526,9 +553,12 @@ class LagHiPPO(nn.Module):
 
         c = torch.zeros(u.shape[1:], device=inputs.device)
         cs = []
+        time_start = time.time()
         for f in inputs:
             c = torch.matmul(self.dA, c.unsqueeze(-1)).squeeze(-1) + self.dB * f
             cs.append(c)
+        time_end = time.time()
+        print(f"LagHiPPO Total computation time for forward pass: {time_end - time_start:.2f} seconds")
         return torch.stack(cs, dim=0)
 
     def reconstruct(self, c, evals=None):
@@ -539,10 +569,13 @@ class LagHiPPO(nn.Module):
         if evals is not None:
             z_warped = np.exp(-evals)
             eval_matrix = np.zeros((len(evals), self.N))
+            time_start = time.time()
             for k in range(len(evals)):
                 for n in range(self.N):
                     eval_matrix[k, n] = phi(n, z_warped[k]) * np.exp(-self.c * evals[k])
             eval_matrix = torch.Tensor(eval_matrix)
+            time_end = time.time()
+            print(f"LagHiPPO reconstruct() Total computation time for eval_matrix: {time_end - time_start:.2f} seconds")
         else:
             eval_matrix = self.eval_matrix
 
@@ -624,6 +657,7 @@ def plot(T, dt, N, freq):
 
     for method in lti_methods:
         hippo = HiPPO(method=method, N=N, dt=dt, T=T).to(device)
+
         u_hippo = hippo.reconstruct(hippo(u))[-1].cpu()
         plt.plot(vals[-len(u_hippo):], u_hippo, label=method)
 
@@ -636,8 +670,11 @@ def plot(T, dt, N, freq):
         plt.plot(vals[-len(u_hippo):], u_hippo, label=method+' (scaled)')
 
     # Lag operator-based HiPPO-LagS
-    hippo = LagHiPPO(N=N, dt=dt, T=T).to(device)
-    u_hippo = hippo.reconstruct(hippo(u))[-1].cpu()
+    hippo_lti = HiPPO(method='legs', N=N, dt=dt, T=T).to(device)
+    hippo_lag = LagHiPPO(N=N, dt=dt, T=T).to(device)
+    # hippo_lag.dB = hippo_lti.dB
+    # hippo_lag.dA = hippo_lti.dA
+    u_hippo = hippo_lag.reconstruct(hippo_lag(u))[-1].cpu()
     plt.plot(vals[-len(u_hippo):], u_hippo, label='lag operator')
 
     # plt.xlabel('Time (normalized)', labelpad=-10)
