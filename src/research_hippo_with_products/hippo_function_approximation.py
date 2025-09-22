@@ -207,7 +207,7 @@ def transition(measure, N, **measure_args):
 
     return A, B
 
-def measure(method, c=0.0):
+def measure(method, c=0.0, sigma_deriv_func=None):
     if method == 'legt':
         fn = lambda x: np.heaviside(x, 0.0) * np.heaviside(1.0-x, 0.0)
     elif method == 'legs':
@@ -216,16 +216,24 @@ def measure(method, c=0.0):
         fn = lambda x: np.heaviside(x, 1.0) * np.exp(-x)
     elif method in ['fourier']:
         fn = lambda x: np.heaviside(x, 1.0) * np.heaviside(1.0-x, 1.0)
+    elif method == 'custom_lag':
+        if sigma_deriv_func is None:
+            raise ValueError("`sigma_deriv` function must be provided for 'custom_lag' method.")
+        # Assumes 'x' is lookback time (tau = t-s) and the present is t=0.
+        # This makes absolute time s = -x.
+        fn = lambda x: np.heaviside(x, 1.0) * sigma_deriv_func(0, -x)
     else: raise NotImplementedError
     fn_tilted = lambda x: np.exp(c*x) * fn(x)
     return fn_tilted
 
 
-
 # %%
-def basis(method, N, vals, c=0.0, truncate_measure=True):
+def basis(method, N, vals, c=0.0, truncate_measure=True, phi_func=None, sigma_func=None):
     """
     vals: list of times (forward in time)
+    sigma_func (callable): The time-warp function, sigma(t, s).
+    sigma_deriv (callable): The derivative of the warp, needed for truncation.
+
     returns: shape (T, N) where T is length of vals
     """
     if method == 'legt':
@@ -245,7 +253,21 @@ def basis(method, N, vals, c=0.0, truncate_measure=True):
         sin = 2**.5 * np.sin(2*np.pi*np.arange(N//2)[:, None]*(vals)) # (N/2, T/dt)
         cos[0] /= 2**.5
         eval_matrix = np.stack([cos.T, sin.T], axis=-1).reshape(-1, N) # (T/dt, N)
+    elif method == 'custom_lag':
+        if phi_func is None or sigma_func is None:
+            raise ValueError("`phi_func` and `sigma_func` must be provided for 'custom_lag' method.")
+
+        # Assumes 'vals' is lookback time (tau) and the present is t=0.
+        # This makes absolute time s = -vals.
+        z_vals = sigma_func(0, -vals)
+
+        # *** USE VECTORIZED EVALUATION INSTEAD OF A SLOW LOOP ***
+        n_vals = np.arange(N)
+        eval_matrix = vectorized_basis(phi_func, n_vals, z_vals)
+        eval_matrix = eval_matrix.T
+
 #     print("eval_matrix shape", eval_matrix.shape)
+
 
     if truncate_measure:
         eval_matrix[measure(method)(vals) == 0.0] = 0.0
@@ -294,7 +316,7 @@ class HiPPOScale(nn.Module):
         inputs : (length, ...)
         output : (length, ..., N) where N is the order of the HiPPO projection
         """
-
+        start_time = time.time()
         L = inputs.shape[0]
 
         inputs = inputs.unsqueeze(-1)
@@ -304,6 +326,7 @@ class HiPPOScale(nn.Module):
 
         if fast:
             result = variable_unroll_matrix(self.A_stacked[:L], u)
+
             return result
 
         c = torch.zeros(u.shape[1:]).to(inputs)
@@ -337,7 +360,6 @@ class HiPPO(nn.Module):
         A = A + np.eye(N)*c
         self.A = A
         self.B = B.squeeze(-1)
-        print("B:", self.B)
         self.measure_fn = measure(method)
 
         C = np.ones((1, N))
@@ -358,13 +380,16 @@ class HiPPO(nn.Module):
         inputs : (length, ...)
         output : (length, ..., N) where N is the order of the HiPPO projection
         """
-
+        start_time = time.time()
         inputs = inputs.unsqueeze(-1)
         u = inputs * self.dB # (length, ..., N)
 
         if fast:
             dA = repeat(self.dA, 'm n -> l m n', l=u.size(0))
-            return variable_unroll_matrix(dA, u)
+            result = variable_unroll_matrix(dA, u)
+            end_time = time.time()
+            print(f"HiPPO(time-invariant) Total computation time for fast forward pass: {end_time - start_time:.2f} seconds")
+            return result
 
         c = torch.zeros(u.shape[1:]).to(inputs)
         cs = []
@@ -382,10 +407,7 @@ class HiPPO(nn.Module):
         output: (..., L,)
         """
         if evals is not None:
-            time_start = time.time()
             eval_matrix = basis(self.method, self.N, evals)
-            time_end = time.time()
-            print(f"HiPPO(time-invariant) reconstruct() Total computation time for eval_matrix: {time_end - time_start:.2f} seconds")
         else:
             eval_matrix = self.eval_matrix
 
@@ -396,7 +418,7 @@ class HiPPO(nn.Module):
         return y.squeeze(-1).flip(-1)
 
 
-# %%
+# %% Lag HiPPO
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -407,25 +429,89 @@ from tqdm import tqdm
 from scipy.special import legendre
 import time
 
+# Real Fourier basis on [0,1]
+def phi_fourier(n, z):
+    """
+    Computes the n-th real Fourier basis function on [0,1].
+    Uses 2*pi for correct periodicity on the unit interval.
+    """
+    if n == 0:
+        return np.ones_like(z)
+    # k starts from 1
+    k = (n // 2) + 1 if n % 2 == 0 else (n + 1) // 2
+
+    if n % 2 == 1:  # Odd n > 0 for cosine terms
+        return np.sqrt(2) * np.cos(2 * np.pi * k * z)
+    else:  # Even n > 0 for sine terms
+        return np.sqrt(2) * np.sin(2 * np.pi * k * z)
+
+
+def phi_fourier_deriv(n, z):
+    """
+    Computes the derivative of the n-th real Fourier basis function on [0,1].
+    """
+    if n == 0:
+        return np.zeros_like(z)
+    # k starts from 1
+    k = (n // 2) + 1 if n % 2 == 0 else (n + 1) // 2
+
+    if n % 2 == 1:  # Derivative of cosine is -sine
+        return -2 * np.pi * k * np.sqrt(2) * np.sin(2 * np.pi * k * z)
+    else:  # Derivative of sine is cosine
+        return 2 * np.pi * k * np.sqrt(2) * np.cos(2 * np.pi * k * z)
+
 def phi(n, z):
     y = 2 * z - 1
-    return np.sqrt(2 * n + 1) * legendre(n)(y)
+    return np.sqrt(2 * n + 1) * eval_legendre(n, y)
 
-# Derivative of phi (for Legendre)
-def phi_prime(n, z):
+
+def phi_deriv(n, z):
     y = 2 * z - 1
-    p_n = legendre(n)
-    p_prime_n = p_n.deriv()
-    return np.sqrt(2 * n + 1) * p_prime_n(y) * 2  # Chain rule dy/dz = 2
+    if n == 0:
+        return np.zeros_like(z)
+    p_n = eval_legendre(n, y)
+    p_nm1 = eval_legendre(n - 1, y)
+    den = 1.0 - y**2
+    result = np.zeros_like(z)
+    nonzero_den = den > 1e-10
+    result[nonzero_den] = (
+        n
+        / den[nonzero_den]
+        * (p_nm1[nonzero_den] - y[nonzero_den] * p_n[nonzero_den])
+        * 2.0
+    )
+    zero_den = den <= 1e-10
+    signs = np.where(y[zero_den] > 0, 1.0, (-1.0) ** (n + 1))
+    result[zero_den] = signs * n * (n + 1) / 2 * 2.0
+    return np.sqrt(2 * n + 1) * result
 
 
 # Warp functions for HiPPO-LegS
 def sigma(t, s):
     return np.exp(s - t)
 
+def sigma_deriv(t, s):
+    return np.exp(s - t)
 
-def sigma_inv(t, z):
-    return t + np.log(z)
+# def sigma_uniform(t, s, T=1.):
+#     return (s - (t -T)) /T  # Shift to positive, normalize if needed
+
+# def sigma_uniform_deriv(t, s, T=1.):
+#     return 1.0 / T
+
+# def sigma_uniform(t, s, dt):
+#     return (s - t + 1.0)  # Shift to positive, normalize if needed
+
+# def sigma_uniform_deriv(t, s):
+#     return 1.0
+
+def sigma_uniform(t, s):
+    return (s - t + 1.0)  # Shift to positive, normalize if needed
+
+def sigma_uniform_deriv(t, s):
+    return 1.0
+# def sigma_inv(t, z):
+#     return t + np.log(z)
 
 
 def get_gauss_quadrature(order, a=0, b=1):
@@ -445,46 +531,32 @@ def vectorized_basis(basis_func, n_values, z_values):
         vals[:, j] = basis_func(n, z_values)
     return vals
 
-def lag_transition(N, dt=1.0, quad_order=None):
+def lag_transition(N, phi_func, phi_deriv_func, dt=1.0, quad_order=None):
     if quad_order is None:
         quad_order = 2 * N
-
     n_vals = np.arange(N)
-
-    # Compute A_gen via quadrature on [0,1]
-    z_nodes, z_weights = get_gauss_quadrature(quad_order, 0, 1)
-    phi_vals = vectorized_basis(phi, n_vals, z_nodes)  # (k, N)
-    phi_prime_vals = vectorized_basis(phi_prime, n_vals, z_nodes)  # (k, N)
-    A_gen = np.einsum(
-        "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_prime_vals
-    )
-
     start_time = time.time()
-    print(f"\nA_gen computed via vectorized Gauss quadrature (order {quad_order}):")
-    print(np.round(A_gen, 3))
+    z_nodes, z_weights = get_gauss_quadrature(quad_order, 0, 1)
+    phi_vals = vectorized_basis(phi_func, n_vals, z_nodes)
+    phi_deriv_vals = vectorized_basis(phi_deriv_func, n_vals, z_nodes)
+    A_gen = np.einsum(
+        "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_deriv_vals
+    )
     end_time = time.time()
     print(f"Total computation time for A_gen: {end_time - start_time:.2f} seconds")
 
-    # A_infty = expm(dt * A_gen)  # If needed
-
-    # Compute B via quadrature on [exp(-dt), 1]
-    z_min = np.exp(-dt)
-    z_max = 1.0
-    z_nodes_b, z_weights_b = get_gauss_quadrature(quad_order, z_min, z_max)
-    basis_evals_b = vectorized_basis(phi, n_vals, z_nodes_b)  # (k, N)
-    B_zoh_vec = basis_evals_b.T @ z_weights_b
-
     start_time = time.time()
-    print(f"\nB computed via vectorized Gauss quadrature:")
-    print(np.round(B_zoh_vec, 3))
+    B_delta = np.zeros(N)
+    for n in range(N):
+        B_delta[n] = phi_func(n, 1)
     end_time = time.time()
-    print(f"Total computation time for B: {end_time - start_time:.2f} seconds")
+    print(f"Total computation time for B_delta: {end_time - start_time:.2f} seconds")
 
-    return A_gen, B_zoh_vec  # Return A_gen for discretization
+    return A_gen, B_delta
 
 class LagHiPPO(nn.Module):
     """ Lag Operator-based time invariant x_{t+1} = A x_t + B u_t """
-    def __init__(self, N, dt=1.0, T=1.0, c=0.0, discretization='bilinear'):
+    def __init__(self, N, phi_func, phi_deriv_func, sigma_func, sigma_deriv_func, dt=1.0, T=1.0, c=0.0, discretization='bilinear'):
         """
         N: the order of the HiPPO projection
         dt: discretization step size
@@ -496,22 +568,25 @@ class LagHiPPO(nn.Module):
         self.dt = dt
         self.T = T
         self.c = c
+        self.phi_func = phi_func
+        self.phi_deriv_func = phi_deriv_func
+        self.sigma_func = sigma_func
+        self.sigma_deriv_func = sigma_deriv_func
 
         # Compute lag-based transition matrices
-        A_gen, B_zoh = lag_transition(N, dt=self.dt)
+        A_gen, B = lag_transition(N, phi_func, phi_deriv_func, dt=self.dt)
 
         A_HiPPO = (A_gen - np.eye(N)).T
 
         self.A = A_HiPPO
-        self.B = B_zoh
-        self.measure_fn = measure('legs')
+        self.B = B
+        self.measure_fn = self.measure()
 
         C = np.ones((1, N))
         D = np.zeros((1,))
-        dA, dB, _, _, _ = signal.cont2discrete((A_HiPPO, B_zoh, C, D), dt=dt, method=discretization)
+        dA, dB, _, _, _ = signal.cont2discrete((A_HiPPO, B, C, D), dt=dt, method=discretization)
 
         dB = dB
-
 
         self.register_buffer('dA', torch.Tensor(dA))  # (N, N)
         self.register_buffer('dB', torch.Tensor(dB))  # (N,)
@@ -519,46 +594,50 @@ class LagHiPPO(nn.Module):
         # Evaluation matrix for reconstruction
         self.vals = np.arange(0.0, T, dt)
         self.eval_matrix = self._compute_eval_matrix()  # (len(vals), N)
-
-        # Measure for truncation (exponential decay)
-        time_start = time.time()
-        self.measure = self._compute_measure()
-        time_end = time.time()
-        print(f"LagHiPPO Total computation time for measure: {time_end - time_start:.2f} seconds")
+        self.measure = self.measure_fn(self.vals)  # Using original HiPPO convention
 
 
     def _compute_eval_matrix(self):
-        z_warped = np.exp(-self.vals)  # (len(vals),)
+        start_time = time.time()
+        z_warped = self.sigma_func(0, -self.vals)  # (len(vals),)
         n_vals = np.arange(self.N)
-        eval_matrix = vectorized_basis(phi, n_vals, z_warped)  # (len(vals), N)
+        eval_matrix = vectorized_basis(self.phi_func, n_vals, z_warped)  # (len(vals), N)
         decay_factor = np.exp(-self.c * self.vals)  # (len(vals),)
         eval_matrix = eval_matrix * decay_factor[:, np.newaxis]  # Broadcast decay to
+        end_time = time.time()
+        print(f"LagHiPPO: Total computation time for basis: {end_time - start_time:.2f} seconds")
+
         return torch.Tensor(eval_matrix)
 
+    def measure(self):
+        return lambda x: np.heaviside(x, 1.0) * self.sigma_deriv_func(0, -x)
 
     def _compute_measure(self):
-        return np.exp(-self.vals)
+        return self.measure()(self.vals)
 
     def forward(self, inputs, fast=True):
         """
         inputs : (length, ...)
         output : (length, ..., N)
         """
+        time_start = time.time()
         inputs = inputs.unsqueeze(-1)
         u = inputs * self.dB  # (length, ..., N)
 
         if fast:
             dA = self.dA.unsqueeze(0).repeat(u.size(0), 1, 1)  # (L, N, N)
-            return variable_unroll_matrix(dA, u)
+            result = variable_unroll_matrix(dA, u)
+            time_end = time.time()
+            print(f"LagHiPPO: Total computation time for fast forward pass: {time_end - time_start:.2f} seconds")
+            return result
 
         c = torch.zeros(u.shape[1:], device=inputs.device)
         cs = []
-        time_start = time.time()
         for f in inputs:
             c = torch.matmul(self.dA, c.unsqueeze(-1)).squeeze(-1) + self.dB * f
             cs.append(c)
         time_end = time.time()
-        print(f"LagHiPPO Total computation time for forward pass: {time_end - time_start:.2f} seconds")
+        print(f"LagHiPPO: Total computation time for forward pass: {time_end - time_start:.2f} seconds")
         return torch.stack(cs, dim=0)
 
     def reconstruct(self, c, evals=None):
@@ -567,15 +646,12 @@ class LagHiPPO(nn.Module):
         output: (..., L,)
         """
         if evals is not None:
-            z_warped = np.exp(-evals)
+            z_warped = self.sigma_func(0, -evals)
             eval_matrix = np.zeros((len(evals), self.N))
             time_start = time.time()
-            for k in range(len(evals)):
-                for n in range(self.N):
-                    eval_matrix[k, n] = phi(n, z_warped[k]) * np.exp(-self.c * evals[k])
-            eval_matrix = torch.Tensor(eval_matrix)
+            eval_matrix = self._compute_eval_matrix()
             time_end = time.time()
-            print(f"LagHiPPO reconstruct() Total computation time for eval_matrix: {time_end - time_start:.2f} seconds")
+            print(f"LagHiPPO: reconstruct() Total computation time for eval_matrix: {time_end - time_start:.2f} seconds")
         else:
             eval_matrix = self.eval_matrix
 
@@ -586,7 +662,9 @@ class LagHiPPO(nn.Module):
         c = c.unsqueeze(-1)
         y = torch.matmul(eval_matrix.to(c.device), c)
         return y.squeeze(-1).flip(-1)
-# %%
+
+
+# %% White Noise
 ### Synthetic data generation
 
 def whitesignal(period, dt, freq, rms=0.5, batch_shape=()):
@@ -634,7 +712,7 @@ if visualize:
 # %% [markdown]
 # Visualize the HiPPO function reconstruction theory in the spirit of the original paper. A random function $u(t)$ (black) is generated and processed sequentially by a HiPPO operator $x'(t) = A(t) x(t) + B(t) u(t)$. At the end of the sequence, the final state $x(t)$, which has dimension much smaller than the length of the sequence, can be used (via a linear projection) to approximately reconstruct the entire input.
 
-# %%
+# %% plot Whitenoise
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 np.random.seed(0)
 def plot(T, dt, N, freq):
@@ -670,10 +748,11 @@ def plot(T, dt, N, freq):
         plt.plot(vals[-len(u_hippo):], u_hippo, label=method+' (scaled)')
 
     # Lag operator-based HiPPO-LagS
-    hippo_lti = HiPPO(method='legs', N=N, dt=dt, T=T).to(device)
-    hippo_lag = LagHiPPO(N=N, dt=dt, T=T).to(device)
-    # hippo_lag.dB = hippo_lti.dB
-    # hippo_lag.dA = hippo_lti.dA
+    phi_func = phi
+    phi_deriv_func = phi_deriv
+    sigma_func = sigma
+    sigma_deriv_func = sigma_deriv
+    hippo_lag = LagHiPPO(N=3*N, phi_func=phi_func, phi_deriv_func=phi_deriv_func, sigma_func=sigma_func, sigma_deriv_func=sigma_deriv_func, dt=dt, T=T).to(device)
     u_hippo = hippo_lag.reconstruct(hippo_lag(u))[-1].cpu()
     plt.plot(vals[-len(u_hippo):], u_hippo, label='lag operator')
 
@@ -688,10 +767,8 @@ plot(T=3, dt=1e-3, N=64, freq=3.0)
 
 # %%
 # Animation code from "How to Train Your HiPPO"
-
 sns.set_style('ticks')
-
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else torch.device('cpu'))
 
 def plt_lines(x, y, color, size, label=None):
     return plt.plot(x, y, color, linewidth=size, label=label)[0]
@@ -700,11 +777,11 @@ def update_lines(ln, x, y):
     ln.set_data(x, y)
 
 def animate_hippo(
-    method,
+    model,  # Pass model instance (HiPPO or LagHiPPO)
     T=5, dt=5e-4, N=64, freq=20.0,
     interval=100,
-    plot_hippo=False, hippo_offset=0.0, label_hippo=False,
-    plot_measure=False, measure_offset=-3.0, label_measure=False,
+    plot_hippo=True, hippo_offset=0.0, label_hippo=False,
+    plot_measure=True, measure_offset=-3.0, label_measure=False,
     plot_coeff=None, coeff_offset=3.0,
     plot_s4=False, s4_offset=6.0,
     plot_hippo_type='line', plot_measure_type='line', plot_coeff_type='line',
@@ -721,12 +798,19 @@ def animate_hippo(
 
     u = torch.FloatTensor(whitesignal(T, dt, freq=freq))
     u = F.pad(u, (1, 0))
-    u = u + torch.FloatTensor(np.sin(1.5*np.pi/T*np.arange(0, T+dt, dt))) # add 3/4 of a sin cycle
+    u = u + torch.FloatTensor(np.sin(1.5*np.pi/T*np.arange(0, T+dt, dt)))  # Add 3/4 of a sin cycle
     u = u.to(device)
 
-    hippo = HiPPO(method=method, N=N, dt=dt, T=T).to(device)
-    coef_hippo = hippo(u).cpu().numpy()
-    h_hippo = hippo.reconstruct(hippo(u)).cpu().numpy()
+    # Use provided model
+    coef_model = model(u).cpu().numpy()
+    h_model = model.reconstruct(model(u)).cpu().numpy()
+    # print('Reconstruction MSE:', np.mean((h_model.flatten() - u.cpu().numpy().flatten())**2))
+    print('u shape: ', u.shape)
+    print('u: ', u)
+    print('coef_model shape: ', coef_model.shape)
+    print('coef_model: ', coef_model)
+    print('h_model shape: ', h_model.shape)
+    print('h_model: ', h_model)
     u = u.cpu().numpy()
 
     fig, ax = plt.subplots(figsize=(12, 4))
@@ -737,22 +821,18 @@ def animate_hippo(
         plt_lines(vals, u, 'k', size, label='Input $u(t)$')
 
     if plot_hippo:
-        label_args = {'label': 'HiPPO reconstruction'} if label_hippo else {}
+        label_args = {'label': f'{model.__class__.__name__} reconstruction'} if label_hippo else {}
         ln = plt_lines([], [], size=size, color='red', **label_args)
 
     if plot_measure:
-        label_args = {'label': 'HiPPO Measure'} if label_measure else {}
+        label_args = {'label': f'{model.__class__.__name__} Measure'} if label_measure else {}
         ln_measure = plt_lines(vals, np.zeros(len(vals))+measure_offset, size=size, color='green', **label_args)
 
     if plot_coeff is None: plot_coeff = []
     if isinstance(plot_coeff, int): plot_coeff = [plot_coeff]
     if len(plot_coeff) > 0:
-        ln_coeffs = [
-            plt_lines([], [], size=size, color='blue')
-            for _ in plot_coeff
-        ]
-        plt_lines([], [], size=size, color='blue', label='State $x(t)$') # For the legend
-
+        ln_coeffs = [plt_lines([], [], size=size, color='blue') for _ in plot_coeff]
+        plt_lines([], [], size=size, color='blue', label='State $x(t)$')  # For legend
 
     ### Y AXIS LIMITS
     if plot_measure:
@@ -765,20 +845,18 @@ def animate_hippo(
     else:
         max_u = np.max(u)
 
-
     C = np.random.random(N)
-    s4 = np.sum(coef_hippo * C, axis=-1)
+    s4 = np.sum(coef_model * C, axis=-1)
     max_s4 = 0.0
     if plot_s4:
         ln_s4 = plt_lines([], [], size=size, color='red', label='Output $y(t)$')
-        max_s4 = np.max(s4)+s4_offset
+        max_s4 = np.max(s4) + s4_offset
 
     if plot_vline:
         ln_vline = ax.axvline(0, ls='-', color='k', lw=1)
 
     if plot_legend:
         plt.legend(loc='upper left', fontsize='x-small')
-
 
     def init():
         left_endpoint = vals[0]
@@ -796,23 +874,22 @@ def animate_hippo(
             update_lines(ln_u, xdata, ydata)
 
         m = np.zeros(len(vals))
-        m[:frame] = hippo.measure_fn(np.arange(frame)*dt)[::-1]
+        m[:frame] = model.measure_fn(np.arange(frame) * dt)[::-1] if hasattr(model, 'measure_fn') else model.measure[:frame][::-1]
         xdata = vals
         if plot_measure:
-            update_lines(ln_measure, xdata, m+measure_offset)
+            update_lines(ln_measure, xdata, m + measure_offset)
 
         if plot_hippo:
-            ydata = h_hippo[frame] + hippo_offset
-            m2 = hippo.measure_fn(np.arange(len(ydata))*dt)[::-1]
-            # Remove reconstruction where measure is 0
+            ydata = h_model[frame] + hippo_offset
+            m2 = model.measure_fn(np.arange(len(ydata)) * dt)[::-1] if hasattr(model, 'measure_fn') else model.measure[:len(ydata)][::-1]
             ydata[m2 == 0.0] = np.nan
-            xdata = np.arange(frame-len(ydata), frame)
+            xdata = np.arange(frame - len(ydata), frame)
             update_lines(ln, xdata, ydata)
 
         if len(plot_coeff) > 0:
             for coeff, ln_coeff in zip(plot_coeff, ln_coeffs):
-                update_lines(ln_coeff, np.arange(frame), coef_hippo[:frame, coeff] + coeff_offset)
-        if plot_s4: # Only scale case; scale case should copy plot_hippo logic
+                update_lines(ln_coeff, np.arange(frame), coef_model[:frame, coeff] + coeff_offset)
+        if plot_s4:
             update_lines(ln_s4, np.arange(0, frame), s4[:frame] + s4_offset)
 
         if plot_vline:
@@ -821,11 +898,13 @@ def animate_hippo(
         return []
 
     ani = FuncAnimation(fig, update,
-                        frames=np.arange(0, int(T*1000/interval)+1)*int(interval/1000/dt),
+                        frames=np.arange(0, int(T*1000/interval)+1) * int(interval/1000/dt),
                         interval=interval,
                         init_func=init, blit=True)
 
     return ani
+#%%
+
 
 # %% [markdown]
 # Here, an input signal $u(t)$ (Black) is processed by the HiPPO operator $x'(t) = \boldsymbol{A}x(t) + \boldsymbol{B}u(t)$
@@ -833,10 +912,14 @@ def animate_hippo(
 
 # %%
 # Visualize HiPPO online reconstruction
-
+N = 64
+T = 5
+dt = 5e-4
+hippo_lti = HiPPO(method='legs', N=N, dt=dt, T=T).to(device)
 ani = animate_hippo(
-    'legs', # Try 'legt' or 'fourier'
-    T=5, dt=5e-4, N=64, interval=100,
+    # 'legs', # Try 'legt' or 'fourier'
+    hippo_lti,
+    T=T, dt=dt, N=N, interval=100,
 #     T=1, dt=1e-3, N=64, interval=200, # Faster rendering for testing
     size=1.0,
 
@@ -850,12 +933,40 @@ ani = animate_hippo(
 )
 ani
 
+
+#%%
+N = 64
+T = 5
+dt = 5e-4
+hippo_lag = LagHiPPO(N=N, phi_func=phi, phi_deriv_func=phi_deriv, sigma_func=sigma, sigma_deriv_func=sigma_deriv, dt=dt, T=T).to(device)
+# hippo_lti = HiPPO(method='legs', N=N, dt=dt, T=T).to(device)
+# hippo_lag.dA = hippo_lti.dA
+ani = animate_hippo(
+    # 'legs', # Try 'legt' or 'fourier'
+    hippo_lag,
+    T=T, dt=dt, N=N, interval=100,
+#     T=1, dt=1e-3, N=64, interval=200, # Faster rendering for testing
+    size=1.0,
+
+    animate_u=True,
+    plot_hippo=True, hippo_offset=0.0, label_hippo=True,
+    plot_s4=False, s4_offset=6.0,
+    plot_measure=True, measure_offset=-3.0, label_measure=True,
+    plot_coeff=[], coeff_offset=3.0,
+    plot_legend=True, plot_xticks=True, plot_box=True,
+    plot_vline=True,
+)
+ani
 # %%
 # Visualize S4
 
+N = 64
+T = 5
+dt = 5e-4
+hippo_lti = HiPPO(method='legs', N=N, dt=dt, T=T).to(device)
 ani = animate_hippo(
-    'legs', # Try 'legt' or 'fourier'
-    T=5, dt=5e-4, N=64, interval=100,
+    hippo_lti,
+    T=T, dt=dt, N=N, interval=100,
     size=1.0,
 
     animate_u=True,
@@ -867,6 +978,9 @@ ani = animate_hippo(
     plot_vline=True,
 )
 ani
+
+#%%
+
 
 # %%
 ani.save(
@@ -882,3 +996,97 @@ ani.save(
 
 
 
+# --- 1. Define the new Linear Warp functions ---
+
+# def linear_warp(t, s, T=1.0):
+#     """Maps absolute time [t-T, t] to canonical time [0, 1]."""
+#     # In lookback coordinates (s = -vals), this is just vals/T
+#     x = (s - (t - T)) / T
+#     return (s - (t - T)) / T
+
+# def linear_warp_deriv(t, s, T=1.0):
+#     """Derivative w.r.t. s is constant."""
+#     x = 1.0 / T
+#     return 1.0 / T * np.heaviside(x, 1.0) * np.heaviside(1.0-x, 1.0)
+
+def linear_warp(t, s):
+    """Maps absolute time [t-T, t] to canonical time [0, 1]."""
+    # In lookback coordinates (s = -vals), this is just vals/T
+    return (s - t)
+
+def linear_warp_deriv(t, s):
+    """Derivative w.r.t. s is constant."""
+    return 1.0
+
+# --- 2. Define a periodic test signal ---
+
+def periodic_signal(vals):
+    """A sum of sine waves, perfect for testing the Fourier basis."""
+    return (np.sin(2 * np.pi * 2 * vals) +
+            0.5 * np.sin(2 * np.pi * 5 * vals))
+
+# --- 3. A new plotting function for your experiment ---
+
+def plot_basis_comparison(T, dt, N):
+    vals = np.arange(0.0, T, dt)
+    u = torch.tensor(periodic_signal(vals / T), dtype=torch.float) # Normalize time for signal
+
+    plt.figure(figsize=(14, 8))
+    plt.plot(vals, u.cpu(), 'k', linewidth=2, label='Input Periodic Signal')
+
+    # --- Model 0: Legendre Basis + Exponential Warp ---
+    print("\n--- Testing Legendre + Exponential Warp ---")
+    model_fourier = LagHiPPO(
+        N=N,
+        phi_func=phi,
+        phi_deriv_func=phi_deriv,
+        sigma_func=sigma,
+        sigma_deriv_func=sigma_deriv,
+        dt=dt, T=T
+    )
+    c_fourier = model_fourier(u)
+    recon_fourier = model_fourier.reconstruct(c_fourier[-1]).cpu().detach().numpy()
+    mse_fourier = np.mean((u.cpu().numpy() - recon_fourier)**2)
+    plt.plot(vals, recon_fourier, '--', label=f'Legendre Basis w Exp Warp | MSE: {mse_fourier:.5f}')
+
+
+    # --- Model 1: Legendre Basis + Linear Warp (HiPPO-LegT) ---
+    print("--- Testing Legendre + Linear Warp ---")
+    model_legt = LagHiPPO(
+        N=N,
+        phi_func=phi,
+        phi_deriv_func=phi_deriv,
+        sigma_func=lambda t, s: linear_warp(t, s),
+        sigma_deriv_func=lambda t, s: linear_warp_deriv(t, s),
+        dt=dt, T=T
+    )
+    c_legt = model_legt(u)
+    recon_legt = model_legt.reconstruct(c_legt[-1]).cpu().detach().numpy()
+    mse_legt = np.mean((u.cpu().numpy() - recon_legt)**2)
+    plt.plot(vals, recon_legt, '--', label=f'Legendre Basis | MSE: {mse_legt:.5f}')
+
+    # --- Model 2: Fourier Basis + Linear Warp (Novel Model) ---
+    print("\n--- Testing Fourier + Linear Warp ---")
+    model_fourier = LagHiPPO(
+        N=N,
+        phi_func=phi_fourier,
+        phi_deriv_func=phi_fourier_deriv,
+        sigma_func=lambda t, s: linear_warp(t, s),
+        sigma_deriv_func=lambda t, s: linear_warp_deriv(t, s),
+        dt=dt, T=T
+    )
+    c_fourier = model_fourier(u)
+    recon_fourier = model_fourier.reconstruct(c_fourier[-1]).cpu().detach().numpy()
+    mse_fourier = np.mean((u.cpu().numpy() - recon_fourier)**2)
+    plt.plot(vals, recon_fourier, '--', label=f'Fourier Basis | MSE: {mse_fourier:.5f}')
+
+
+
+    plt.title(f"Basis Comparison on Periodic Signal (N={N})")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+# --- Run the experiment ---
+plot_basis_comparison(T=3.0, dt=1e-3, N=32)
+# %%

@@ -78,8 +78,8 @@ end_time = time.time()
 print(f"\nTotal computation time: {end_time - start_time:.2f} seconds")
 print("Computed A_t:\n", np.round(A_t, 3))
 
-# Compute B_t
-B_t = np.zeros(N)
+# Compute B_zoh
+B_zoh = np.zeros(N)
 start_time = time.time()
 for n in tqdm(range(N), desc="Computing B"):
 
@@ -88,11 +88,17 @@ for n in tqdm(range(N), desc="Computing B"):
 
     z_min = sigma(t + 1, t)
     z_max = sigma(t + 1, t + 1)
-    B_t[n] = quad(integrand, z_min, z_max)[0]
+    B_zoh[n] = quad(integrand, z_min, z_max)[0]
 
 end_time = time.time()
 print(f"\nTotal computation time for B: {end_time - start_time:.2f} seconds")
-print("Computed B_t:\n", np.round(B_t, 3))
+print("Computed B_zoh:\n", np.round(B_zoh, 5))
+
+# Compute B_delta
+B_delta = np.zeros(N)
+for n in range(N):
+    B_delta[n] = phi(n, 1)
+print("Computed B_delta:\n", np.round(B_delta, 5))
 
 
 # %%
@@ -142,15 +148,15 @@ def transition(measure, N):
 
 N = 4
 A_cont, B_cont = transition("legs", N)
-print("Continuous A:\n", np.round(A_cont, 3))
-print("Continuous B:\n", np.round(B_cont.flatten(), 3))
+print("Continuous A:\n", np.round(A_cont, 5))
+print("Continuous B:\n", np.round(B_cont.flatten(), 5))
 dt = 1.0
 I = np.eye(N)
 inv = np.linalg.inv(I - dt / 2 * A_cont)
 dA = inv @ (I + dt / 2 * A_cont)
 dB = inv @ (dt * B_cont)
-print("Discretized A:\n", np.round(dA, 3))
-print("Discretized B:\n", np.round(dB.flatten(), 3))
+print("Discretized A:\n", np.round(dA, 5))
+print("Discretized B:\n", np.round(dB.flatten(), 5))
 
 
 # %%
@@ -272,15 +278,28 @@ import matplotlib.pyplot as plt
 # Basis function (Normalized Legendre on [0,1])
 def phi(n, z):
     y = 2 * z - 1
-    return np.sqrt(2 * n + 1) * legendre(n)(y)
+    return np.sqrt(2 * n + 1) * eval_legendre(n, y)
 
 
-# Derivative of phi (for Legendre)
-def phi_prime(n, z):
+def phi_deriv(n, z):
     y = 2 * z - 1
-    p_n = legendre(n)
-    p_prime_n = p_n.deriv()
-    return np.sqrt(2 * n + 1) * p_prime_n(y) * 2  # Chain rule dy/dz = 2
+    if n == 0:
+        return np.zeros_like(z)
+    p_n = eval_legendre(n, y)
+    p_nm1 = eval_legendre(n - 1, y)
+    den = 1.0 - y**2
+    result = np.zeros_like(z)
+    nonzero_den = den > 1e-10
+    result[nonzero_den] = (
+        n
+        / den[nonzero_den]
+        * (p_nm1[nonzero_den] - y[nonzero_den] * p_n[nonzero_den])
+        * 2.0
+    )
+    zero_den = den <= 1e-10
+    signs = np.where(y[zero_den] > 0, 1.0, (-1.0) ** (n + 1))
+    result[zero_den] = signs * n * (n + 1) / 2 * 2.0
+    return np.sqrt(2 * n + 1) * result
 
 
 # Warp functions for HiPPO-LegS
@@ -310,48 +329,74 @@ def vectorized_basis(basis_func, n_values, z_values):
     return vals
 
 
+# def vectorized_basis(basis_func, n_values, z_values):
+#     # Vectorize basis_func over n (scalar) and z (array)
+#     vectorized_func = np.vectorize(basis_func, otypes=[float])
+#     vals = np.zeros((len(z_values), len(n_values)))
+#     for j, n in enumerate(n_values):
+#         vals[:, j] = vectorized_func(n, z_values)
+#     return vals
+
+
+# %%
 # Lag operator transition matrices
-def lag_transition(N, dt=1.0, quad_order=None):
+# def lag_transition(N, dt=1.0, quad_order=None):
+#     if quad_order is None:
+#         quad_order = 20 * N
+
+#     n_vals = np.arange(N)
+
+#     # Compute A_gen via quadrature on [0,1]
+#     z_nodes, z_weights = get_gauss_quadrature(quad_order, 0, 1)
+#     phi_vals = vectorized_basis(phi, n_vals, z_nodes)  # (k, N)
+#     phi_prime_vals = vectorized_basis(phi_deriv, n_vals, z_nodes)  # (k, N)
+#     A_gen = np.einsum(
+#         "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_prime_vals
+#     )
+
+#     start_time = time.time()
+#     print(f"\nA_gen computed via vectorized Gauss quadrature (order {quad_order}):")
+#     print(np.round(A_gen, 3))
+#     end_time = time.time()
+#     print(f"Total computation time for A_gen: {end_time - start_time:.2f} seconds")
+
+#     # A_infty = expm(dt * A_gen)  # If needed
+
+#     # Compute B via quadrature on [exp(-dt), 1]
+#     z_min = np.exp(-dt)
+#     z_max = 1.0
+#     z_nodes_b, z_weights_b = get_gauss_quadrature(quad_order, z_min, z_max)
+#     basis_evals_b = vectorized_basis(phi, n_vals, z_nodes_b)  # (k, N)
+#     B_zoh_vec = basis_evals_b.T @ z_weights_b
+
+#     start_time = time.time()
+#     print(f"\nB computed via vectorized Gauss quadrature:")
+#     print(np.round(B_zoh_vec, 3))
+#     end_time = time.time()
+#     print(f"Total computation time for B: {end_time - start_time:.2f} seconds")
+
+#     return A_gen, B_zoh_vec  # Return A_gen for discretization
+
+
+def lag_transition(N, phi_func, phi_deriv_func, dt=1.0, quad_order=None):
     if quad_order is None:
         quad_order = 2 * N
-
     n_vals = np.arange(N)
-
-    # Compute A_gen via quadrature on [0,1]
     z_nodes, z_weights = get_gauss_quadrature(quad_order, 0, 1)
-    phi_vals = vectorized_basis(phi, n_vals, z_nodes)  # (k, N)
-    phi_prime_vals = vectorized_basis(phi_prime, n_vals, z_nodes)  # (k, N)
+    phi_vals = vectorized_basis(phi_func, n_vals, z_nodes)
+    phi_deriv_vals = vectorized_basis(phi_deriv_func, n_vals, z_nodes)
     A_gen = np.einsum(
-        "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_prime_vals
+        "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_deriv_vals
     )
 
-    start_time = time.time()
-    print(f"\nA_gen computed via vectorized Gauss quadrature (order {quad_order}):")
-    print(np.round(A_gen, 3))
-    end_time = time.time()
-    print(f"Total computation time for A_gen: {end_time - start_time:.2f} seconds")
-
-    # A_infty = expm(dt * A_gen)  # If needed
-
-    # Compute B via quadrature on [exp(-dt), 1]
-    z_min = np.exp(-dt)
-    z_max = 1.0
-    z_nodes_b, z_weights_b = get_gauss_quadrature(quad_order, z_min, z_max)
-    basis_evals_b = vectorized_basis(phi, n_vals, z_nodes_b)  # (k, N)
-    B_zoh_vec = basis_evals_b.T @ z_weights_b
-
-    start_time = time.time()
-    print(f"\nB computed via vectorized Gauss quadrature:")
-    print(np.round(B_zoh_vec, 3))
-    end_time = time.time()
-    print(f"Total computation time for B: {end_time - start_time:.2f} seconds")
-
-    return A_gen, B_zoh_vec  # Return A_gen for discretization
+    B = phi_func(np.arange(N), 1)
+    return A_gen, B
 
 
-A_gen, B_zoh = lag_transition(N=4, dt=1.0)
+N = 4
+A_gen, B = lag_transition(N=N, phi_func=phi, phi_deriv_func=phi_deriv, dt=1.0)
 print("A_gen:\n", np.round(A_gen, 5))
-print("B_zoh:\n", np.round(B_zoh, 5))
+print("B:\n", np.round(B, 5))
 
 
 # %%
@@ -482,4 +527,60 @@ for n in range(N)[-5:-1]:
     plt.legend()
     plt.show()
     plt.close()
+# %%
+
+N = 64
+
+
+def lag_transition(N, phi_func, phi_deriv_func, dt=1.0, quad_order=None):
+    if quad_order is None:
+        quad_order = max(2 * N, 4 * N if N > 20 else 2 * N)  #
+
+    n_vals = np.arange(N)
+
+    # Compute A_gen via quadrature on [0,1]
+    z_nodes, z_weights = get_gauss_quadrature(quad_order, 0, 1)
+    phi_vals = vectorized_basis(phi_func, n_vals, z_nodes)  # (k, N)
+    phi_deriv_vals = vectorized_basis(phi_deriv_func, n_vals, z_nodes)  # (k, N)
+    A_gen = np.einsum(
+        "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_deriv_vals
+    )
+
+    start_time = time.time()
+    print(f"\nA_gen computed via vectorized Gauss quadrature (order {quad_order}):")
+    print(np.round(A_gen, 3))
+    end_time = time.time()
+    print(f"Total computation time for A_gen: {end_time - start_time:.2f} seconds")
+
+    # A_infty = expm(dt * A_gen)  # If needed
+
+    # Compute B via phi(1)
+    B_delta = np.zeros(N)
+    for n in range(N):
+        B_delta[n] = phi_func(n, 1)
+    return A_gen, B_delta  # Return A_gen for discretization
+
+
+A_custom, B_custom = lag_transition(N, phi_func=phi, phi_deriv_func=phi_deriv, dt=1.0)
+
+print("A_gen_custom:\n", np.round(A_custom, 5))
+print("B_custom:\n", np.round(B_custom, 5))
+print("A_HiPPO custom = (A_gen_custom - I)^T:\n", np.round((A_custom - np.eye(N)).T, 5))
+
+# %%
+Ns = [5, 10, 20, 30, 40, 50, 60, 70, 80]
+avg_diffs = []
+for N in Ns:
+    A_gen_custom, B_custom = lag_transition(
+        N, phi_func=phi, phi_deriv_func=phi_deriv, dt=1.0, quad_order=20 * N
+    )
+    A_HiPPO = (A_gen_custom - np.eye(N)).T
+    A_cont, B_cont = transition("legs", N)
+
+    print("A_HiPPO:\n", np.round(A_HiPPO[-5:, -5:], 5))
+    print("A_cont:\n", np.round(A_cont[-5:, -5:], 5))
+    avg_diff = (A_HiPPO - A_cont).mean()
+    avg_diffs.append(float(avg_diff))
+    print(f"avg diff({N}):", avg_diff)
+print(list(zip(Ns, avg_diffs)))
 # %%
