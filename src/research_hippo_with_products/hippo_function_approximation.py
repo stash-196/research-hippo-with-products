@@ -29,7 +29,7 @@ sns.set(rc={
 sns.set_context('notebook')
 sns.set_style('whitegrid') # or 'ticks'
 
-# %%
+# %% Define useful functions
 # Utility functions for performing matrix scans faster
 # The HiPPO functions also have pedagogical sequential versions, so this cell is not required
 
@@ -168,7 +168,7 @@ def variable_unroll_matrix(A, u, s=None, variable=True, recurse_limit=16):
     return variable_unroll_general(A, u, s, op, compose_op=matmul, sequential_op=sequential_op, variable=variable, recurse_limit=recurse_limit)
 
 
-# %%
+# %% Define transition & measure & basis
 def transition(measure, N, **measure_args):
     # Laguerre (translated)
     if measure == 'lagt':
@@ -227,7 +227,6 @@ def measure(method, c=0.0, sigma_deriv_func=None):
     return fn_tilted
 
 
-# %%
 def basis(method, N, vals, c=0.0, truncate_measure=True, phi_func=None, sigma_func=None):
     """
     vals: list of times (forward in time)
@@ -253,18 +252,6 @@ def basis(method, N, vals, c=0.0, truncate_measure=True, phi_func=None, sigma_fu
         sin = 2**.5 * np.sin(2*np.pi*np.arange(N//2)[:, None]*(vals)) # (N/2, T/dt)
         cos[0] /= 2**.5
         eval_matrix = np.stack([cos.T, sin.T], axis=-1).reshape(-1, N) # (T/dt, N)
-    elif method == 'custom_lag':
-        if phi_func is None or sigma_func is None:
-            raise ValueError("`phi_func` and `sigma_func` must be provided for 'custom_lag' method.")
-
-        # Assumes 'vals' is lookback time (tau) and the present is t=0.
-        # This makes absolute time s = -vals.
-        z_vals = sigma_func(0, -vals)
-
-        # *** USE VECTORIZED EVALUATION INSTEAD OF A SLOW LOOP ***
-        n_vals = np.arange(N)
-        eval_matrix = vectorized_basis(phi_func, n_vals, z_vals)
-        eval_matrix = eval_matrix.T
 
 #     print("eval_matrix shape", eval_matrix.shape)
 
@@ -277,7 +264,7 @@ def basis(method, N, vals, c=0.0, truncate_measure=True, phi_func=None, sigma_fu
     return p
 
 
-# %%
+# %% HiPPO Scale
 class HiPPOScale(nn.Module):
     """ Vanilla HiPPO-LegS model (scale invariant instead of time invariant) """
     def __init__(self, N, method='legs', max_length=1024, discretization='bilinear'):
@@ -341,7 +328,7 @@ class HiPPOScale(nn.Module):
         return a
 
 
-# %%
+# %% HiPPO LTI
 class HiPPO(nn.Module):
     """ Linear time invariant x' = Ax + Bu """
     def __init__(self, N, method='legt', dt=1.0, T=1.0, discretization='bilinear', scale=False, c=0.0):
@@ -460,6 +447,29 @@ def phi_fourier_deriv(n, z):
     else:  # Derivative of sine is cosine
         return 2 * np.pi * k * np.sqrt(2) * np.cos(2 * np.pi * k * z)
 
+
+
+# Warp functions for HiPPO-LegS
+def sigma(t, s, tau=1.):
+    return np.exp((s - t) / tau)
+
+def sigma_deriv(t, s, tau=1.):
+    return np.exp((s - t) / tau) / tau
+
+# def sigma_uniform(t, s, T=1.):
+#     return (s - (t -T)) /T  # Shift to positive, normalize if needed
+
+# def sigma_uniform_deriv(t, s, T=1.):
+#     return 1.0 / T
+
+def sigma_uniform(t, s):
+    return (s - t + 1.0)  # Shift to positive, normalize if needed
+
+def sigma_uniform_deriv(t, s):
+    return 1.0
+# def sigma_inv(t, z):
+#     return t + np.log(z)
+
 def phi(n, z):
     y = 2 * z - 1
     return np.sqrt(2 * n + 1) * eval_legendre(n, y)
@@ -485,35 +495,6 @@ def phi_deriv(n, z):
     result[zero_den] = signs * n * (n + 1) / 2 * 2.0
     return np.sqrt(2 * n + 1) * result
 
-
-# Warp functions for HiPPO-LegS
-def sigma(t, s):
-    return np.exp(s - t)
-
-def sigma_deriv(t, s):
-    return np.exp(s - t)
-
-# def sigma_uniform(t, s, T=1.):
-#     return (s - (t -T)) /T  # Shift to positive, normalize if needed
-
-# def sigma_uniform_deriv(t, s, T=1.):
-#     return 1.0 / T
-
-# def sigma_uniform(t, s, dt):
-#     return (s - t + 1.0)  # Shift to positive, normalize if needed
-
-# def sigma_uniform_deriv(t, s):
-#     return 1.0
-
-def sigma_uniform(t, s):
-    return (s - t + 1.0)  # Shift to positive, normalize if needed
-
-def sigma_uniform_deriv(t, s):
-    return 1.0
-# def sigma_inv(t, z):
-#     return t + np.log(z)
-
-
 def get_gauss_quadrature(order, a=0, b=1):
     """Get Gauss-Legendre nodes and weights on interval [a, b]."""
     x, w = roots_legendre(order)
@@ -533,35 +514,44 @@ def vectorized_basis(basis_func, n_values, z_values):
 
 def lag_transition(N, phi_func, phi_deriv_func, dt=1.0, quad_order=None):
     if quad_order is None:
-        quad_order = 2 * N
+        quad_order = max(2 * N, 4 * N if N > 20 else 2 * N)  #
+
     n_vals = np.arange(N)
-    start_time = time.time()
+
+    # Compute A_gen via quadrature on [0,1]
     z_nodes, z_weights = get_gauss_quadrature(quad_order, 0, 1)
-    phi_vals = vectorized_basis(phi_func, n_vals, z_nodes)
-    phi_deriv_vals = vectorized_basis(phi_deriv_func, n_vals, z_nodes)
+    phi_vals = vectorized_basis(phi_func, n_vals, z_nodes)  # (k, N)
+    phi_deriv_vals = vectorized_basis(phi_deriv_func, n_vals, z_nodes)  # (k, N)
     A_gen = np.einsum(
-        "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_deriv_vals
+        # "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_deriv_vals
+        "i,ik,il->kl", z_weights, phi_vals, z_nodes[:, None] * phi_deriv_vals
     )
+
+    start_time = time.time()
+    print(f"\nA_gen computed via vectorized Gauss quadrature (order {quad_order}):")
+    print(np.round(A_gen, 3))
     end_time = time.time()
     print(f"Total computation time for A_gen: {end_time - start_time:.2f} seconds")
 
-    start_time = time.time()
+    # A_infty = expm(dt * A_gen)  # If needed
+
+    # Compute B via phi(1)
     B_delta = np.zeros(N)
     for n in range(N):
         B_delta[n] = phi_func(n, 1)
-    end_time = time.time()
-    print(f"Total computation time for B_delta: {end_time - start_time:.2f} seconds")
+    return A_gen, B_delta  # Return A_gen for discretization
 
-    return A_gen, B_delta
 
 class LagHiPPO(nn.Module):
     """ Lag Operator-based time invariant x_{t+1} = A x_t + B u_t """
-    def __init__(self, N, phi_func, phi_deriv_func, sigma_func, sigma_deriv_func, dt=1.0, T=1.0, c=0.0, discretization='bilinear'):
+    def __init__(self, N, phi_func, phi_deriv_func, sigma_func, sigma_deriv_func, dt=1.0, T=1.0, c=0.0, discretization='bilinear', mode='scale', window=1.0):
         """
         N: the order of the HiPPO projection
         dt: discretization step size
         T: total time for evaluation matrix
         c: optional decay parameter
+mode: 'scale' for exponential/compressive warps, 'translate' for uniform/truncated warps.
+        window: For 'translate' mode, the fixed truncation window (normalized to 1 by default to match HiPPO-LegT).
         """
         super().__init__()
         self.N = N
@@ -572,11 +562,14 @@ class LagHiPPO(nn.Module):
         self.phi_deriv_func = phi_deriv_func
         self.sigma_func = sigma_func
         self.sigma_deriv_func = sigma_deriv_func
+        self.mode = mode
+        self.window = window
 
         # Compute lag-based transition matrices
         A_gen, B = lag_transition(N, phi_func, phi_deriv_func, dt=self.dt)
 
-        A_HiPPO = (A_gen - np.eye(N)).T
+
+        A_HiPPO = -(A_gen + np.eye(N)).T
 
         self.A = A_HiPPO
         self.B = B
@@ -594,8 +587,7 @@ class LagHiPPO(nn.Module):
         # Evaluation matrix for reconstruction
         self.vals = np.arange(0.0, T, dt)
         self.eval_matrix = self._compute_eval_matrix()  # (len(vals), N)
-        self.measure = self.measure_fn(self.vals)  # Using original HiPPO convention
-
+        self.measure = self._compute_measure()  # Using original HiPPO convention
 
     def _compute_eval_matrix(self):
         start_time = time.time()
@@ -610,7 +602,7 @@ class LagHiPPO(nn.Module):
         return torch.Tensor(eval_matrix)
 
     def measure(self):
-        return lambda x: np.heaviside(x, 1.0) * self.sigma_deriv_func(0, -x)
+        return lambda x: self.sigma_deriv_func(0, -x)
 
     def _compute_measure(self):
         return self.measure()(self.vals)
@@ -655,9 +647,9 @@ class LagHiPPO(nn.Module):
         else:
             eval_matrix = self.eval_matrix
 
-        if self.measure is not None:
-            m = self.measure[self.measure != 0.0]
-            eval_matrix = eval_matrix[:len(m), :]
+        # if self.measure is not None:
+        #     m = self.measure[self.measure != 0.0]
+        #     eval_matrix = eval_matrix[:len(m), :]
 
         c = c.unsqueeze(-1)
         y = torch.matmul(eval_matrix.to(c.device), c)
@@ -711,7 +703,6 @@ if visualize:
 
 # %% [markdown]
 # Visualize the HiPPO function reconstruction theory in the spirit of the original paper. A random function $u(t)$ (black) is generated and processed sequentially by a HiPPO operator $x'(t) = A(t) x(t) + B(t) u(t)$. At the end of the sequence, the final state $x(t)$, which has dimension much smaller than the length of the sequence, can be used (via a linear projection) to approximately reconstruct the entire input.
-
 # %% plot Whitenoise
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 np.random.seed(0)
@@ -733,28 +724,39 @@ def plot(T, dt, N, freq):
         'fourier',
     ]
 
-    for method in lti_methods:
-        hippo = HiPPO(method=method, N=N, dt=dt, T=T).to(device)
+    # for method in lti_methods:
+    #     hippo = HiPPO(method=method, N=N, dt=dt, T=T).to(device)
+    #     u_hippo = hippo.reconstruct(hippo(u))[-1].cpu()
+    #     print("u_hippo shape for method ({}): {}".format(method, u_hippo.shape))
+    #     plt.plot(vals[-len(u_hippo):], u_hippo, label=method)
 
-        u_hippo = hippo.reconstruct(hippo(u))[-1].cpu()
-        plt.plot(vals[-len(u_hippo):], u_hippo, label=method)
+    # # Original HiPPO-LegS, which uses time-varying SSM x' = 1/t [ Ax + Bu]
+    # # we call this "linear scale invariant"
+    # lsi_methods = ['legs']
+    # for method in lsi_methods:
+    #     hippo = HiPPOScale(N=N, method=method, max_length=int(T/dt)).to(device)
+    #     u_hippo = hippo.reconstruct(hippo(u))[-1].cpu()
+    #     plt.plot(vals[-len(u_hippo):], u_hippo, label=method+' (scaled)')
 
-    # Original HiPPO-LegS, which uses time-varying SSM x' = 1/t [ Ax + Bu]
-    # we call this "linear scale invariant"
-    lsi_methods = ['legs']
-    for method in lsi_methods:
-        hippo = HiPPOScale(N=N, method=method, max_length=int(T/dt)).to(device)
-        u_hippo = hippo.reconstruct(hippo(u))[-1].cpu()
-        plt.plot(vals[-len(u_hippo):], u_hippo, label=method+' (scaled)')
 
-    # Lag operator-based HiPPO-LagS
+
+    hippo_lti = HiPPO(method='legs', N=N, dt=dt, T=T).to(device)
+    u_hippo = hippo_lti.reconstruct(hippo_lti(u))[-1].cpu()
+    print("u_hippo shape for method ({}): {}".format('legs', u_hippo.shape))
+    plt.plot(vals[-len(u_hippo):], u_hippo, label='legs')
+
+    # # Lag operator-based HiPPO-LagS
     phi_func = phi
     phi_deriv_func = phi_deriv
-    sigma_func = sigma
-    sigma_deriv_func = sigma_deriv
-    hippo_lag = LagHiPPO(N=3*N, phi_func=phi_func, phi_deriv_func=phi_deriv_func, sigma_func=sigma_func, sigma_deriv_func=sigma_deriv_func, dt=dt, T=T).to(device)
+    sigma_func = lambda t, s: sigma(t, s, tau=1.0)
+    sigma_deriv_func = lambda t, s: sigma_deriv(t, s, tau=1.0)
+    hippo_lag = LagHiPPO(N=N, phi_func=phi_func, phi_deriv_func=phi_deriv_func, sigma_func=sigma_func, sigma_deriv_func=sigma_deriv_func, dt=dt, T=T, mode='translate').to(device)
     u_hippo = hippo_lag.reconstruct(hippo_lag(u))[-1].cpu()
+    print("u_hippo shape for LagHiPPO: {}".format(u_hippo.shape))
     plt.plot(vals[-len(u_hippo):], u_hippo, label='lag operator')
+
+    plt.plot(vals[-len(u_hippo):], hippo_lti.measure[::-1]-2, linewidth=1.0, label='measure lti')
+    plt.plot(vals[-len(u_hippo):], hippo_lag.measure[::-1]-2, linewidth=1.0, label='measure lag')
 
     # plt.xlabel('Time (normalized)', labelpad=-10)
     # plt.savefig(f'function_approximation.pdf', bbox_inches='tight')
@@ -763,7 +765,7 @@ def plot(T, dt, N, freq):
     plt.close()
 
 
-plot(T=3, dt=1e-3, N=64, freq=3.0)
+plot(T=10, dt=1e-3, N=64, freq=3.0)
 
 # %%
 # Animation code from "How to Train Your HiPPO"
@@ -1058,7 +1060,8 @@ def plot_basis_comparison(T, dt, N):
         phi_deriv_func=phi_deriv,
         sigma_func=lambda t, s: linear_warp(t, s),
         sigma_deriv_func=lambda t, s: linear_warp_deriv(t, s),
-        dt=dt, T=T
+        dt=dt, T=T,
+        mode='translate'
     )
     c_legt = model_legt(u)
     recon_legt = model_legt.reconstruct(c_legt[-1]).cpu().detach().numpy()

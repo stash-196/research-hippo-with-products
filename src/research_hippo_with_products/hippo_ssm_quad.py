@@ -262,3 +262,42 @@ print(f"Vectorized A_infty computation time: {end_time - start_time:.6f} seconds
 print("\nComputed B_ZOH (first 5 elements):\n", np.round(B_zoh_vec[:5], 4))
 print("\nComputed A_infty (top-left 5x5):\n", np.round(A_infty_vec[:5, :5], 5))
 # %%
+
+# %%
+# Lag operator transition matrices
+# def lag_transition(N, dt=1.0, quad_order=None):
+#     if quad_order is None:
+#         quad_order = 20 * N
+
+#     n_vals = np.arange(N)
+
+#     # Compute A_gen via quadrature on [0,1]
+#     z_nodes, z_weights = get_gauss_quadrature(quad_order, 0, 1)
+#     phi_vals = vectorized_basis(phi, n_vals, z_nodes)  # (k, N)
+#     phi_prime_vals = vectorized_basis(phi_deriv, n_vals, z_nodes)  # (k, N)
+#     A_gen = np.einsum(
+#         "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_prime_vals
+#     )
+
+#     start_time = time.time()
+#     print(f"\nA_gen computed via vectorized Gauss quadrature (order {quad_order}):")
+#     print(np.round(A_gen, 3))
+#     end_time = time.time()
+#     print(f"Total computation time for A_gen: {end_time - start_time:.2f} seconds")
+
+#     # A_infty = expm(dt * A_gen)  # If needed
+
+#     # Compute B via quadrature on [exp(-dt), 1]
+#     z_min = np.exp(-dt)
+#     z_max = 1.0
+#     z_nodes_b, z_weights_b = get_gauss_quadrature(quad_order, z_min, z_max)
+#     basis_evals_b = vectorized_basis(phi, n_vals, z_nodes_b)  # (k, N)
+#     B_zoh_vec = basis_evals_b.T @ z_weights_b
+
+#     start_time = time.time()
+#     print(f"\nB computed via vectorized Gauss quadrature:")
+#     print(np.round(B_zoh_vec, 3))
+#     end_time = time.time()
+#     print(f"Total computation time for B: {end_time - start_time:.2f} seconds")
+
+#     return A_gen, B_zoh_vec  # Return A_gen for discretization

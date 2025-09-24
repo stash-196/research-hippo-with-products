@@ -116,18 +116,14 @@ for n in tqdm(range(N), desc="Outer loop for A_gen"):
             alpha = np.sqrt(2 * m + 1)
             phi_m_prime = alpha * p_prime_m(y) * 2
             phi_n_val = phi(n, z)
-            return -phi_n_val * z * phi_m_prime
+            return phi_n_val * z * phi_m_prime
 
         A_gen[n, m] = quad(integrand, Z_min, Z_max, limit=100)[0]
 end_time = time.time()
 print("\nTotal computation time for A_gen:", end_time - start_time)
 A_infty_exp = expm(A_gen)
 print("A_gen :\n", np.round(A_gen, 5))
-print(
-    "-(-A_gen^T+I) :\n",
-    -(-np.round(A_gen.T, 3) + np.eye(N)),
-    5,
-)
+print("-(A_gen^T+I) :\n", np.round(-(A_gen.T + np.eye(N)).T, 5))
 print("A_infty_exp :\n", np.round(A_infty_exp, 5))
 
 
@@ -167,7 +163,7 @@ for n in tqdm(range(N), desc="Computing A_infty via Direct Integration"):
 
         def integrand(z):
             # The lag operator is applied to the second basis function
-            return phi(n, z) * phi(m, np.exp(-1) * z)
+            return phi(n, z) * phi(m, np.exp(1) * z)
 
         A_infty[n, m] = quad(integrand, 0, 1)[0]
 
@@ -250,7 +246,6 @@ def lag_transition_infty(N, dt=1.0, quad_order=None):
     return A_infty_vec, B_zoh_vec
 
 
-N = 333
 A_infty, B_zoh = lag_transition_infty(N)
 print("A_infty:\n", np.round(A_infty, 5))
 print("B_zoh:\n", np.round(B_zoh, 5))
@@ -338,46 +333,6 @@ def vectorized_basis(basis_func, n_values, z_values):
 #     return vals
 
 
-# %%
-# Lag operator transition matrices
-# def lag_transition(N, dt=1.0, quad_order=None):
-#     if quad_order is None:
-#         quad_order = 20 * N
-
-#     n_vals = np.arange(N)
-
-#     # Compute A_gen via quadrature on [0,1]
-#     z_nodes, z_weights = get_gauss_quadrature(quad_order, 0, 1)
-#     phi_vals = vectorized_basis(phi, n_vals, z_nodes)  # (k, N)
-#     phi_prime_vals = vectorized_basis(phi_deriv, n_vals, z_nodes)  # (k, N)
-#     A_gen = np.einsum(
-#         "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_prime_vals
-#     )
-
-#     start_time = time.time()
-#     print(f"\nA_gen computed via vectorized Gauss quadrature (order {quad_order}):")
-#     print(np.round(A_gen, 3))
-#     end_time = time.time()
-#     print(f"Total computation time for A_gen: {end_time - start_time:.2f} seconds")
-
-#     # A_infty = expm(dt * A_gen)  # If needed
-
-#     # Compute B via quadrature on [exp(-dt), 1]
-#     z_min = np.exp(-dt)
-#     z_max = 1.0
-#     z_nodes_b, z_weights_b = get_gauss_quadrature(quad_order, z_min, z_max)
-#     basis_evals_b = vectorized_basis(phi, n_vals, z_nodes_b)  # (k, N)
-#     B_zoh_vec = basis_evals_b.T @ z_weights_b
-
-#     start_time = time.time()
-#     print(f"\nB computed via vectorized Gauss quadrature:")
-#     print(np.round(B_zoh_vec, 3))
-#     end_time = time.time()
-#     print(f"Total computation time for B: {end_time - start_time:.2f} seconds")
-
-#     return A_gen, B_zoh_vec  # Return A_gen for discretization
-
-
 def lag_transition(N, phi_func, phi_deriv_func, dt=1.0, quad_order=None):
     if quad_order is None:
         quad_order = 2 * N
@@ -386,7 +341,7 @@ def lag_transition(N, phi_func, phi_deriv_func, dt=1.0, quad_order=None):
     phi_vals = vectorized_basis(phi_func, n_vals, z_nodes)
     phi_deriv_vals = vectorized_basis(phi_deriv_func, n_vals, z_nodes)
     A_gen = np.einsum(
-        "i,ik,il->kl", z_weights, -phi_vals, z_nodes[:, None] * phi_deriv_vals
+        "i,ik,il->kl", z_weights, phi_vals, z_nodes[:, None] * phi_deriv_vals
     )
 
     B = phi_func(np.arange(N), 1)
@@ -403,7 +358,7 @@ print("B:\n", np.round(B, 5))
 class LagHiPPO(nn.Module):
     """Lag Operator-based time invariant x_{t+1} = A x_t + B u_t"""
 
-    def __init__(self, N, dt=1.0, T=1.0, c=0.0):
+    def __init__(self, N, phi_func, phi_deriv_func, dt=1.0, T=1.0, c=0.0):
         super().__init__()
         self.N = N
         self.dt = dt
@@ -411,7 +366,9 @@ class LagHiPPO(nn.Module):
         self.c = c
 
         time_start = time.time()
-        dA, dB = lag_transition(N, dt=self.dt)
+        dA, dB = lag_transition(
+            N, phi_func=phi_func, phi_deriv_func=phi_deriv_func, dt=self.dt
+        )
         time_end = time.time()
         print(
             f"LagHiPPO Total computation time for lag_transition: {time_end - time_start:.2f} seconds"
@@ -486,14 +443,15 @@ if __name__ == "__main__":
     N = 4
     dt = 1.0
     T = 10.0
-    model = LagHiPPO(N=N, dt=dt, T=T)
-    A_infty = model.dA.numpy()
+    model = LagHiPPO(N=N, phi_func=phi, phi_deriv_func=phi_deriv, dt=dt, T=T)
+
 
 # %%
 N = 333
 dt = 1e-3
 T = 10.0
-model = LagHiPPO(N=N, dt=dt, T=T)
+model = LagHiPPO(N=N, phi_func=phi, phi_deriv_func=phi_deriv, dt=dt, T=T)
+
 A_infty = model.dA.numpy()
 
 
@@ -569,6 +527,7 @@ print("A_HiPPO custom = (A_gen_custom - I)^T:\n", np.round((A_custom - np.eye(N)
 
 # %%
 Ns = [5, 10, 20, 30, 40, 50, 60, 70, 80]
+Ns = [64]
 avg_diffs = []
 for N in Ns:
     A_gen_custom, B_custom = lag_transition(
@@ -582,5 +541,81 @@ for N in Ns:
     avg_diff = (A_HiPPO - A_cont).mean()
     avg_diffs.append(float(avg_diff))
     print(f"avg diff({N}):", avg_diff)
+
+
 print(list(zip(Ns, avg_diffs)))
 # %%
+
+
+# import sympy as sp
+# from tqdm import tqdm
+
+# z = sp.symbols("z")
+# # Define base functions symbolically
+# time_start = time.time()
+# legendre_even = [
+#     sp.legendre(2 * k, 2 * z - 1) * sp.sqrt(4 * k + 1) for k in range(16)
+# ]  # Leg0,2,...,30 (16 funcs)
+# time_end_legendre = time.time()
+# print(
+#     (
+#         f"Total computation time for SymPy legendre_even: {time_end_legendre - time_start:.2f} seconds"
+#     )
+# )
+# fourier = [
+#     sp.sqrt(2) * sp.cos(sp.pi * m * z) for m in range(1, 17)
+# ]  # Fourier1 to 16 (total N=32)
+# time_fourier_end = time.time()
+# print(
+#     (
+#         f"Total computation time for SymPy base funcs: {time_fourier_end - time_end_legendre:.2f} seconds"
+#     )
+# )
+# funcs = legendre_even + fourier  # List of sympy expr
+
+# # Gram-Schmidt symbolically
+# start_time = time.time()
+# orth = []
+# for f in tqdm(funcs, desc="Gram-Schmidt Orthogonalization"):
+#     proj = f
+#     for p in tqdm(orth, desc="  Projecting onto existing basis", leave=False):
+#         inner = sp.integrate(proj * p, (z, 0, 1))
+#         proj -= inner * p
+#     norm = sp.sqrt(sp.integrate(proj**2, (z, 0, 1)))
+#     orth.append(proj / norm)
+# end_time = time.time()
+# print(
+#     (
+#         f"Total computation time for SymPy Gram-Schmidt: {end_time - start_time:.2f} seconds"
+#     )
+# )
+
+# # Lambdify to NumPy
+# time_start = time.time()
+# phi_funcs = [sp.lambdify(z, p, "numpy") for p in orth]
+# time_end_lambdify = time.time()
+# print(
+#     (
+#         f"Total computation time for SymPy lambdify: {time_end_lambdify - time_start:.2f} seconds"
+#     )
+# )
+# phi_deriv_funcs = [sp.lambdify(z, sp.diff(p, z), "numpy") for p in orth]
+# end_time_deriv_lambdify = time.time()
+# print(
+#     (
+#         f"Total computation time for SymPy lambdify deriv: {end_time_deriv_lambdify - time_end_lambdify:.2f} seconds"
+#     )
+# )
+
+
+# # In LagHiPPO, define vectorized_basis to use these lists
+# def vectorized_basis(phi_list, n_vals, z_values):
+#     k = len(z_values)
+#     N = len(n_vals)
+#     vals = np.zeros((k, N))
+#     for j, n in enumerate(n_vals):
+#         vals[:, j] = phi_list[n](z_values)
+#     return vals
+
+
+# # %%
