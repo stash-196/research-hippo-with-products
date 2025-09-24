@@ -456,6 +456,8 @@ def sigma(t, s, tau=1.):
 def sigma_deriv(t, s, tau=1.):
     return np.exp((s - t) / tau) / tau
 
+def sigma_inv(t, z, tau=1.):
+    return t + tau * np.log(z)
 
 def sigma_uniform(t, s):
     return (s - t + 1.0)  # Shift to positive, normalize if needed
@@ -508,7 +510,7 @@ def vectorized_basis(basis_func, n_values, z_values):
     return vals
 
 
-def lag_transition_infty(N, phi_func, dt=1.0, quad_order=None):
+def lag_transition_infty(N, phi_func, sigma_func, sigma_inv_func, dt=1.0, quad_order=None):
     if quad_order is None:
         quad_order = max(2 * N, 4 * N if N > 20 else 2 * N)  #
 
@@ -517,7 +519,7 @@ def lag_transition_infty(N, phi_func, dt=1.0, quad_order=None):
     # Direct computation of A_infty via quadrature on [0,1]
     z_nodes_a, z_weights_a = get_gauss_quadrature(quad_order, 0, 1)
     eval_n = vectorized_basis(phi_func, n_vals, z_nodes_a)  # (quad_order, N)
-    warped_z = np.exp(dt) * z_nodes_a
+    warped_z = sigma(0, sigma_inv_func(dt, (z_nodes_a)))  # np.exp(dt) * z_nodes_a
     eval_m = vectorized_basis(phi_func, n_vals, warped_z)  # (quad_order, N)
 
     # Fix: Sum over quadrature points to get (N, N)
@@ -567,7 +569,7 @@ def lag_transition(N, phi_func, phi_deriv_func, dt=1.0, quad_order=None):
 
 class LagHiPPO(nn.Module):
     """ Lag Operator-based time invariant x_{t+1} = A x_t + B u_t """
-    def __init__(self, N, phi_func, phi_deriv_func, sigma_func, sigma_deriv_func, dt=1.0, T=1.0, c=0.0, discretization='bilinear', derive_A_from='gen', mode='scale', window=1.0):
+    def __init__(self, N, phi_func, phi_deriv_func, sigma_func, sigma_deriv_func, sigma_inv_func, dt=1.0, T=1.0, c=0.0, discretization='bilinear', derive_A_from='gen', mode='scale', window=1.0):
         """
         N: the order of the HiPPO projection
         dt: discretization step size
@@ -585,6 +587,7 @@ mode: 'scale' for exponential/compressive warps, 'translate' for uniform/truncat
         self.phi_deriv_func = phi_deriv_func
         self.sigma_func = sigma_func
         self.sigma_deriv_func = sigma_deriv_func
+        self.sigma_inv_func = sigma_inv_func
         self.mode = mode
         self.window = window
 
@@ -601,8 +604,8 @@ mode: 'scale' for exponential/compressive warps, 'translate' for uniform/truncat
         dA, dB, _, _, _ = signal.cont2discrete((A_HiPPO, B, C, D), dt=dt, method=discretization)
 
         if derive_A_from == 'infty':
-            A_infty, _ = lag_transition_infty(N, phi_func, dt=self.dt)
-            A_infty_corrected = np.linalg.inv(A_infty.T) * np.exp(-dt) 
+            A_infty, _ = lag_transition_infty(N, phi_func, sigma_func, sigma_inv_func, dt=self.dt)
+            A_infty_corrected = np.linalg.inv(A_infty.T) * np.exp(-dt)
             dA = A_infty_corrected
             print("\nUsing A_infty for discretization:")
 
@@ -769,15 +772,17 @@ def plot(T, dt, N, freq, plot_domain='s'):
     # # Lag operator-based HiPPO-LagS
     phi_func = phi
     phi_deriv_func = phi_deriv
-    sigma_func = lambda t, s: sigma(t, s, tau=1.0)
-    sigma_deriv_func = lambda t, s: sigma_deriv(t, s, tau=1.0)
-    hippo_lag = LagHiPPO(N=N, phi_func=phi_func, phi_deriv_func=phi_deriv_func, sigma_func=sigma_func, sigma_deriv_func=sigma_deriv_func, dt=dt, T=T, mode='translate').to(device)
+    tau = 1
+    sigma_func = lambda t, s: sigma(t, s, tau=tau)
+    sigma_deriv_func = lambda t, s: sigma_deriv(t, s, tau=tau)
+    sigma_inv_func = lambda t, z: sigma_inv(t, z, tau=tau)
+    hippo_lag = LagHiPPO(N=N, phi_func=phi_func, phi_deriv_func=phi_deriv_func, sigma_func=sigma_func, sigma_deriv_func=sigma_deriv_func, sigma_inv_func=sigma_inv_func, dt=dt, T=T).to(device)
     
     u_hippo = hippo_lag.reconstruct(hippo_lag(u))[-1].cpu()
     print("u_hippo shape for LagHiPPO: {}".format(u_hippo.shape))
     plt.plot(vals[-len(u_hippo):], u_hippo, label='lag operator', linestyle='--')
 
-    A_infty, _ = lag_transition_infty(N, phi_func, dt=dt)
+    A_infty, _ = lag_transition_infty(N, phi_func, sigma_func, sigma_inv_func, dt=dt)
     print("A_infty for LagHiPPO:\n", np.round(A_infty.T, 6))
     print("Eigenvalues of A_infty:\n", np.round(np.abs(np.linalg.eigvals(A_infty.T)), 6))
 
@@ -788,8 +793,7 @@ def plot(T, dt, N, freq, plot_domain='s'):
     print("dA for LagHiPPO:\n", np.round(hippo_lag.dA.cpu().numpy(), 6))
     print("Eigenvalues of dA for LagHiPPO:\n", np.round(np.abs(np.linalg.eigvals(hippo_lag.dA.cpu().numpy())), 6))
 
-    hippo_lag_infty = LagHiPPO(N=N, phi_func=phi_func, phi_deriv_func=phi_deriv_func, sigma_func=sigma_func, sigma_deriv_func=sigma_deriv_func, dt=dt, T=T, mode='translate', derive_A_from='infty').to(device)
-
+    hippo_lag_infty = LagHiPPO(N=N, phi_func=phi_func, phi_deriv_func=phi_deriv_func, sigma_func=sigma_func, sigma_deriv_func=sigma_deriv_func, sigma_inv_func=sigma_inv_func, dt=dt, T=T, derive_A_from='infty').to(device)
     u_hippo = hippo_lag_infty.reconstruct(hippo_lag_infty(u))[-1].cpu()
     print("u_hippo for LagHiPPO:\n{}".format(u_hippo))
     plt.plot(vals[-len(u_hippo):], u_hippo, label=r'lag operator $A_{\infty}$', linestyle='--')
