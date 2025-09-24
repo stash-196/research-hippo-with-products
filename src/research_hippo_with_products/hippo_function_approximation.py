@@ -456,11 +456,6 @@ def sigma(t, s, tau=1.):
 def sigma_deriv(t, s, tau=1.):
     return np.exp((s - t) / tau) / tau
 
-# def sigma_uniform(t, s, T=1.):
-#     return (s - (t -T)) /T  # Shift to positive, normalize if needed
-
-# def sigma_uniform_deriv(t, s, T=1.):
-#     return 1.0 / T
 
 def sigma_uniform(t, s):
     return (s - t + 1.0)  # Shift to positive, normalize if needed
@@ -512,6 +507,34 @@ def vectorized_basis(basis_func, n_values, z_values):
         vals[:, j] = basis_func(n, z_values)
     return vals
 
+
+def lag_transition_infty(N, phi_func, dt=1.0, quad_order=None):
+    if quad_order is None:
+        quad_order = max(2 * N, 4 * N if N > 20 else 2 * N)  #
+
+    n_vals = np.arange(N)
+
+    # Direct computation of A_infty via quadrature on [0,1]
+    z_nodes_a, z_weights_a = get_gauss_quadrature(quad_order, 0, 1)
+    eval_n = vectorized_basis(phi_func, n_vals, z_nodes_a)  # (quad_order, N)
+    warped_z = np.exp(dt) * z_nodes_a
+    eval_m = vectorized_basis(phi_func, n_vals, warped_z)  # (quad_order, N)
+
+    # Fix: Sum over quadrature points to get (N, N)
+    A_infty = np.einsum("i,ik,il->kl", z_weights_a, eval_n, eval_m)
+    start_time = time.time()
+    print(f"\nA_infty computed via vectorized Gauss quadrature (order {quad_order}):")
+    print(np.round(A_infty, 3))
+    end_time = time.time()
+    print(f"Total computation time for A_infty: {end_time - start_time:.2f} seconds")
+
+    # Compute B via phi(1)
+    B_delta = np.zeros(N)
+    for n in range(N):
+        B_delta[n] = phi_func(n, 1)
+    return A_infty, B_delta  # Return A_infty for discretization
+
+
 def lag_transition(N, phi_func, phi_deriv_func, dt=1.0, quad_order=None):
     if quad_order is None:
         quad_order = max(2 * N, 4 * N if N > 20 else 2 * N)  #
@@ -544,7 +567,7 @@ def lag_transition(N, phi_func, phi_deriv_func, dt=1.0, quad_order=None):
 
 class LagHiPPO(nn.Module):
     """ Lag Operator-based time invariant x_{t+1} = A x_t + B u_t """
-    def __init__(self, N, phi_func, phi_deriv_func, sigma_func, sigma_deriv_func, dt=1.0, T=1.0, c=0.0, discretization='bilinear', mode='scale', window=1.0):
+    def __init__(self, N, phi_func, phi_deriv_func, sigma_func, sigma_deriv_func, dt=1.0, T=1.0, c=0.0, discretization='bilinear', derive_A_from='gen', mode='scale', window=1.0):
         """
         N: the order of the HiPPO projection
         dt: discretization step size
@@ -567,8 +590,6 @@ mode: 'scale' for exponential/compressive warps, 'translate' for uniform/truncat
 
         # Compute lag-based transition matrices
         A_gen, B = lag_transition(N, phi_func, phi_deriv_func, dt=self.dt)
-
-
         A_HiPPO = -(A_gen + np.eye(N)).T
 
         self.A = A_HiPPO
@@ -579,7 +600,11 @@ mode: 'scale' for exponential/compressive warps, 'translate' for uniform/truncat
         D = np.zeros((1,))
         dA, dB, _, _, _ = signal.cont2discrete((A_HiPPO, B, C, D), dt=dt, method=discretization)
 
-        dB = dB
+        if derive_A_from == 'infty':
+            A_infty, _ = lag_transition_infty(N, phi_func, dt=self.dt)
+            A_infty_corrected = np.linalg.inv(A_infty.T) * np.exp(-dt) 
+            dA = A_infty_corrected
+            print("\nUsing A_infty for discretization:")
 
         self.register_buffer('dA', torch.Tensor(dA))  # (N, N)
         self.register_buffer('dB', torch.Tensor(dB))  # (N,)
@@ -647,10 +672,6 @@ mode: 'scale' for exponential/compressive warps, 'translate' for uniform/truncat
         else:
             eval_matrix = self.eval_matrix
 
-        # if self.measure is not None:
-        #     m = self.measure[self.measure != 0.0]
-        #     eval_matrix = eval_matrix[:len(m), :]
-
         c = c.unsqueeze(-1)
         y = torch.matmul(eval_matrix.to(c.device), c)
         return y.squeeze(-1).flip(-1)
@@ -706,7 +727,7 @@ if visualize:
 # %% plot Whitenoise
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 np.random.seed(0)
-def plot(T, dt, N, freq):
+def plot(T, dt, N, freq, plot_domain='s'):
     vals = np.arange(0.0, T, dt)
 
     u = whitesignal(T, dt, freq=freq)
@@ -751,12 +772,30 @@ def plot(T, dt, N, freq):
     sigma_func = lambda t, s: sigma(t, s, tau=1.0)
     sigma_deriv_func = lambda t, s: sigma_deriv(t, s, tau=1.0)
     hippo_lag = LagHiPPO(N=N, phi_func=phi_func, phi_deriv_func=phi_deriv_func, sigma_func=sigma_func, sigma_deriv_func=sigma_deriv_func, dt=dt, T=T, mode='translate').to(device)
+    
     u_hippo = hippo_lag.reconstruct(hippo_lag(u))[-1].cpu()
     print("u_hippo shape for LagHiPPO: {}".format(u_hippo.shape))
-    plt.plot(vals[-len(u_hippo):], u_hippo, label='lag operator')
+    plt.plot(vals[-len(u_hippo):], u_hippo, label='lag operator', linestyle='--')
+
+    A_infty, _ = lag_transition_infty(N, phi_func, dt=dt)
+    print("A_infty for LagHiPPO:\n", np.round(A_infty.T, 6))
+    print("Eigenvalues of A_infty:\n", np.round(np.abs(np.linalg.eigvals(A_infty.T)), 6))
+
+    A_infty_corrected = np.linalg.inv(A_infty.T) * np.exp(-dt)  # Correct for missing exp(-dt) factor in derivation
+    print("A_infty_corrected for LagHiPPO:\n", np.round(A_infty_corrected.T, 6))
+    print("Eigenvalues of A_infty_corrected:\n", np.round(np.abs(np.linalg.eigvals(A_infty_corrected.T)), 6))
+
+    print("dA for LagHiPPO:\n", np.round(hippo_lag.dA.cpu().numpy(), 6))
+    print("Eigenvalues of dA for LagHiPPO:\n", np.round(np.abs(np.linalg.eigvals(hippo_lag.dA.cpu().numpy())), 6))
+
+    hippo_lag_infty = LagHiPPO(N=N, phi_func=phi_func, phi_deriv_func=phi_deriv_func, sigma_func=sigma_func, sigma_deriv_func=sigma_deriv_func, dt=dt, T=T, mode='translate', derive_A_from='infty').to(device)
+
+    u_hippo = hippo_lag_infty.reconstruct(hippo_lag_infty(u))[-1].cpu()
+    print("u_hippo for LagHiPPO:\n{}".format(u_hippo))
+    plt.plot(vals[-len(u_hippo):], u_hippo, label=r'lag operator $A_{\infty}$', linestyle='--')
 
     plt.plot(vals[-len(u_hippo):], hippo_lti.measure[::-1]-2, linewidth=1.0, label='measure lti')
-    plt.plot(vals[-len(u_hippo):], hippo_lag.measure[::-1]-2, linewidth=1.0, label='measure lag')
+    plt.plot(vals[-len(u_hippo):], hippo_lag.measure[::-1]-2, linewidth=1.0, label='measure lag', linestyle='--')
 
     # plt.xlabel('Time (normalized)', labelpad=-10)
     # plt.savefig(f'function_approximation.pdf', bbox_inches='tight')
