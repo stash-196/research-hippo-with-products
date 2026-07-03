@@ -2,10 +2,12 @@
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,visualstudiocode
 
 ### Specific to this project ###
-# data files
-data/
-# temporary files
-temp_save/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.egg-info/
+*.pyo
+*.DS_Store
 
 
 ### Python ###
