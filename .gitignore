@@ -9,7 +9,8 @@ __pycache__/
 *.egg-info/
 *.pyo
 *.DS_Store
-
+src/research_hippo_with_products/dataset/temp_save/*
+*.pkl
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
