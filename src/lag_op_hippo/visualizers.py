@@ -1,5 +1,19 @@
-import numpy as np
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
+
+
+def _finalize_figure(save_path=None, show=True, dpi=150):
+    plt.tight_layout()
+    if save_path is not None:
+        path = Path(save_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(path, dpi=dpi, bbox_inches="tight")
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
 
 def get_plot_config(paper_ready=False):
@@ -17,6 +31,7 @@ def get_plot_config(paper_ready=False):
         # Settings for a publication-quality figure ✒️
         plt.rcParams["font.family"] = "serif"
         plt.rcParams["font.serif"] = ["Times New Roman"] + plt.rcParams["font.serif"]
+        plt.rcParams["mathtext.fontset"] = "cm"
         return {
             "axis_label_fontsize": 24,
             "tick_label_fontsize": 20,
@@ -51,6 +66,8 @@ def plot_reconstructed_signal(
     legend_loc="best",
     xlim=None,
     ylim=None,
+    save_path=None,
+    show=True,
 ):
     """
     Plots an original and a reconstructed signal using a shared configuration.
@@ -112,7 +129,9 @@ def plot_reconstructed_signal(
     plt.xticks(fontsize=config["tick_label_fontsize"])
     plt.yticks(fontsize=config["tick_label_fontsize"])
 
-    if not paper_ready:
+    if paper_ready and title:
+        plt.title(title, fontsize=config["axis_label_fontsize"])
+    elif not paper_ready:
         full_title = (
             title + " " if title else ""
         ) + f"Reconstruction of {data_name} in {domain_name} domain"
@@ -126,12 +145,11 @@ def plot_reconstructed_signal(
     plt.grid(True, linestyle="--", alpha=0.6)
     plt.legend(
         fontsize=config["legend_fontsize"],
-        loc="upper center",  # Or "best", etc.
-        bbox_to_anchor=(0.5, 1.1),  # Place above the plot, centered
-        ncol=2,  # Arrange in 2 columns
+        loc=legend_loc if legend_loc != "best" else "upper center",
+        bbox_to_anchor=(0.5, 1.1) if legend_loc == "best" else None,
+        ncol=2,
     )
-    plt.tight_layout()
-    plt.show()
+    _finalize_figure(save_path=save_path, show=show)
 
 
 def plot_basis_functions(
@@ -145,6 +163,10 @@ def plot_basis_functions(
     num_functions_back=None,
     title="",
     paper_ready=False,
+    labels_list=None,
+    legend_loc="best",
+    save_path=None,
+    show=True,
 ):
     """
     Plot a subset of basis functions against the domain.
@@ -179,20 +201,25 @@ def plot_basis_functions(
         )
 
     for i in selected_indices:
-        k = ks[i]
-        if basis_type == "legendre":
-            label = f"$P_{k}({domain_name})$"  # Using LaTeX for legendre
-        else:  # fourier, polynomial
-            label = f"$\phi_{k}({domain_name})$"  # Using LaTeX for phi
+        if labels_list is not None:
+            label = labels_list[i]
+        else:
+            k = ks[i]
+            if basis_type == "legendre":
+                label = rf"$P_{{{k}}}({domain_name})$"
+            else:
+                label = rf"$\phi_{{{k}}}({domain_name})$"
         plt.plot(x, Bases[:, i], label=label, linewidth=config["line_width"])
 
     # --- Apply text size, labels, and conditional title ---
-    plt.xlabel(f"{domain_name}", fontsize=config["axis_label_fontsize"])
+    plt.xlabel(rf"${domain_name}$", fontsize=config["axis_label_fontsize"])
     plt.ylabel("Basis Function Value", fontsize=config["axis_label_fontsize"])
     plt.xticks(fontsize=config["tick_label_fontsize"])
     plt.yticks(fontsize=config["tick_label_fontsize"])
 
-    if not paper_ready:
+    if paper_ready and title:
+        plt.title(title, fontsize=config["axis_label_fontsize"])
+    elif not paper_ready:
         full_title = (
             (title + " " if title else "")
             + f"{data_name} Basis Functions in {domain_name} Domain ({basis_type.capitalize()})"
@@ -200,6 +227,165 @@ def plot_basis_functions(
         plt.title(full_title, fontsize=config["axis_label_fontsize"])
 
     plt.grid(True, linestyle="--", alpha=0.6)
-    # plt.legend(fontsize=config["legend_fontsize"])
-    plt.tight_layout()
-    plt.show()
+    plt.legend(
+        fontsize=config["legend_fontsize"],
+        loc=legend_loc,
+    )
+    _finalize_figure(save_path=save_path, show=show)
+
+
+def plot_measure_density_warp(
+    sigma_fn,
+    sigma_deriv_fn,
+    sigma_inv_fn,
+    sigma_inv_deriv_fn,
+    t_ref,
+    dt,
+    title="",
+    paper_ready=False,
+    legend_loc="best",
+    z_ylim=(-0.05, 1.15),
+    save_path=None,
+    show=True,
+    verbose=False,
+):
+    """Plot measure density on $s$ and its pushforward on $z$.
+
+    On the time domain the LagOp measure is $\\omega_t(s)=\\sigma_t'(s)=dz/ds$.
+
+    Under the warp $z=\\sigma_t(s)$, change of variables gives
+    $\\int u(s)\\,\\omega_t(s)\\,ds = \\int u(\\sigma_t^{-1}(z))\\,dz$, so the
+    pushed-forward density
+    $\\omega_z(z)=\\sigma_t'(s(z))\\,|ds/dz|$
+    must be exactly uniform ($=1$) for any valid warp.
+    """
+    from lag_op_hippo.freq_diagnostics import compute_warp_measure_densities
+
+    result = compute_warp_measure_densities(
+        sigma_fn=sigma_fn,
+        sigma_deriv_fn=sigma_deriv_fn,
+        sigma_inv_fn=sigma_inv_fn,
+        sigma_inv_deriv_fn=sigma_inv_deriv_fn,
+        t_ref=t_ref,
+        dt=dt,
+        verbose=verbose,
+    )
+
+    config = get_plot_config(paper_ready)
+    uniform_ref = np.ones_like(result.z_vals)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    axes[0].plot(
+        result.s_vals,
+        result.measure_s,
+        label=r"$\omega_t(s)=\sigma_t'(s)$",
+        linewidth=config["line_width"],
+        color="black",
+    )
+    axes[0].set_xlim(float(result.s_vals[0]), float(result.s_vals[-1]))
+    axes[0].set_xlabel(r"$s$", fontsize=config["axis_label_fontsize"])
+    axes[0].set_ylabel(r"$\omega_t(s)$", fontsize=config["axis_label_fontsize"])
+    axes[0].set_title(
+        r"Measure on $s$",
+        fontsize=config["axis_label_fontsize"],
+    )
+    axes[0].tick_params(labelsize=config["tick_label_fontsize"])
+    axes[0].grid(True, linestyle="--", alpha=0.6)
+    axes[0].legend(fontsize=config["legend_fontsize"], loc=legend_loc)
+
+    axes[1].plot(
+        result.z_vals,
+        result.measure_z,
+        label=r"$\omega_z(z)$ on active window",
+        linewidth=config["line_width"],
+        color="black",
+    )
+    axes[1].plot(
+        result.z_vals,
+        uniform_ref,
+        label=r"uniform $=1$ (expected)",
+        linewidth=config["line_width"],
+        linestyle="--",
+        color="tab:red",
+    )
+    if len(result.z_vals) > 0:
+        axes[1].set_xlim(float(np.min(result.z_vals)), float(np.max(result.z_vals)))
+    axes[1].set_xlabel(r"$z=\sigma_t(s)$", fontsize=config["axis_label_fontsize"])
+    axes[1].set_ylabel(r"$\omega_z(z)$", fontsize=config["axis_label_fontsize"])
+    axes[1].set_title(
+        r"Pushed-forward measure on $z$ (should be uniform)",
+        fontsize=config["axis_label_fontsize"],
+    )
+    axes[1].set_ylim(z_ylim)
+    axes[1].tick_params(labelsize=config["tick_label_fontsize"])
+    axes[1].grid(True, linestyle="--", alpha=0.6)
+    axes[1].legend(fontsize=config["legend_fontsize"], loc=legend_loc)
+
+    if title:
+        fig.suptitle(title, fontsize=config["axis_label_fontsize"], y=1.02)
+
+    _finalize_figure(save_path=save_path, show=show)
+    return {
+        "max_pushforward_deviation_from_1": result.max_pushforward_deviation_from_1,
+        "mean_pushforward_deviation_from_1": result.mean_pushforward_deviation_from_1,
+        "z_min": result.z_min,
+        "z_max": result.z_max,
+        "is_uniform": result.is_uniform,
+    }
+
+
+def plot_roundtrip_error(
+    x,
+    error,
+    domain_name="s",
+    title=r"$|\,s - \sigma_t^{-1}(\sigma_t(s))\,|$",
+    ylabel=r"$|\,s - \sigma_t^{-1}(\sigma_t(s))\,|$",
+    label=r"roundtrip error",
+    paper_ready=False,
+    legend_loc="best",
+    save_path=None,
+    show=True,
+):
+    """Plot absolute error of a warp roundtrip map on the time domain."""
+    config = get_plot_config(paper_ready)
+    plt.figure(figsize=(8, 5))
+    plt.plot(
+        x,
+        error,
+        label=label,
+        linewidth=config["line_width"],
+        color="black",
+    )
+    plt.xlabel(rf"${domain_name}$", fontsize=config["axis_label_fontsize"])
+    plt.ylabel(ylabel, fontsize=config["axis_label_fontsize"])
+    plt.xticks(fontsize=config["tick_label_fontsize"])
+    plt.yticks(fontsize=config["tick_label_fontsize"])
+    if paper_ready and title:
+        plt.title(title, fontsize=config["axis_label_fontsize"])
+    elif not paper_ready:
+        plt.title(title or "Roundtrip error", fontsize=config["axis_label_fontsize"])
+    plt.grid(True, linestyle="--", alpha=0.6)
+    plt.legend(fontsize=config["legend_fontsize"], loc=legend_loc)
+    _finalize_figure(save_path=save_path, show=show)
+
+
+def plot_inner_product_matrix(
+    inner_mat,
+    title="Inner-product matrix",
+    paper_ready=False,
+    save_path=None,
+    show=True,
+    vmin=None,
+    vmax=None,
+):
+    """Heatmap of basis inner-product matrix for orthonormality diagnostics."""
+    config = get_plot_config(paper_ready)
+    plt.figure(figsize=(8, 6))
+    im = plt.imshow(inner_mat, cmap="RdBu_r", vmin=vmin, vmax=vmax, aspect="auto")
+    plt.colorbar(im, fraction=0.046, pad=0.04)
+    plt.xlabel("basis index m", fontsize=config["axis_label_fontsize"])
+    plt.ylabel("basis index n", fontsize=config["axis_label_fontsize"])
+    if title:
+        plt.title(title, fontsize=config["axis_label_fontsize"])
+    _finalize_figure(save_path=save_path, show=show)

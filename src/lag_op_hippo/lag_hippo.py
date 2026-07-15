@@ -24,13 +24,17 @@ def sigma_deriv(t, s):
 
 
 def sigma_inv(t, z):
-    """Inverse of exponential warping."""
-    return t + np.log(z)
+    """Inverse of exponential warping: s = t + log(z)."""
+    z = np.asarray(z, dtype=np.float64)
+    z = np.maximum(z, 1e-300)
+    return np.asarray(t, dtype=np.float64) + np.log(z)
 
 
 def sigma_inv_deriv(t, z):
-    """Derivative of inverse warping."""
-    return 1 / z
+    """Derivative of inverse warping: ds/dz = 1/z."""
+    del t
+    z = np.asarray(z, dtype=np.float64)
+    return 1.0 / np.maximum(z, 1e-300)
 
 
 def phi(n, z):
@@ -203,6 +207,8 @@ class LagHiPPO(nn.Module):
         window=1.0,
         input_hold="delta",
         quad_order=None,
+        a_tilt="legs",
+        B_vec=None,
     ):
         """
         N: the order of the HiPPO projection
@@ -211,6 +217,10 @@ class LagHiPPO(nn.Module):
         c: optional decay parameter
         mode: 'scale' for exponential/compressive warps, 'translate' for uniform/truncated warps.
         window: For 'translate' mode, the fixed truncation window (normalized to 1 by default to match HiPPO-LegT).
+        a_tilt: How to map A_gen to continuous A.
+            'legs' maps to -(A_gen + I).T (HiPPO-LegS),
+            'translate' maps to -A_gen (HiPPO-LegT / FouT),
+            'raw' uses A_gen directly.
         """
         super().__init__()
         self.N = N
@@ -236,8 +246,21 @@ class LagHiPPO(nn.Module):
             dt=self.dt,
             quad_order=self.quad_order,
         )
-        B = compute_B_delta(N, self.phi_func)
-        A_HiPPO = -(A_gen + np.eye(N)).T
+        B = (
+            np.asarray(B_vec, dtype=np.float64)
+            if B_vec is not None
+            else compute_B_delta(N, self.phi_func)
+        )
+        if a_tilt == "legs":
+            A_HiPPO = -(A_gen + np.eye(N)).T
+        elif a_tilt == "translate":
+            A_HiPPO = -A_gen
+        elif a_tilt == "raw":
+            A_HiPPO = A_gen
+        else:
+            raise ValueError(
+                f"Unknown a_tilt={a_tilt!r}; expected 'legs', 'translate', or 'raw'."
+            )
 
         self.A = A_HiPPO
         self.B = B
@@ -287,6 +310,10 @@ class LagHiPPO(nn.Module):
         eval_matrix = vectorized_basis(
             self.phi_func, n_vals, z_warped
         )  # (len(vals), N)
+        if self.mode == "translate":
+            # Truncate basis outside the active translate window.
+            window_weight = self.sigma_deriv_func(0.0, -self.vals)
+            eval_matrix[window_weight <= 0.0] = 0.0
         decay_factor = np.exp(-self.c * self.vals)  # (len(vals),)
         eval_matrix = eval_matrix * decay_factor[:, np.newaxis]  # Broadcast decay
         end_time = time.time()

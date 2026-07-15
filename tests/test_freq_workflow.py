@@ -3,8 +3,15 @@ import torch
 
 from lag_op_hippo.freq_diagnostics import (
     build_interpolated_signal,
+    compute_warp_measure_densities,
     orthonormality_matrix_gauss,
     run_projection_reconstruction,
+)
+from lag_op_hippo.lag_hippo import (
+    sigma,
+    sigma_deriv,
+    sigma_inv,
+    sigma_inv_deriv,
 )
 from lag_op_hippo.lag_hippo_freq import (
     make_frequency_preserving_basis,
@@ -88,6 +95,34 @@ def test_projection_reconstruction_on_sinusoid_is_finite_and_reasonable():
     assert result.mse < 0.2
     assert np.all(np.isfinite(result.coefficients))
     assert np.all(np.isfinite(result.reconstruction))
+
+
+def test_exponential_warp_pushforward_measure_is_uniform():
+    result = compute_warp_measure_densities(
+        sigma_fn=sigma,
+        sigma_deriv_fn=sigma_deriv,
+        sigma_inv_fn=sigma_inv,
+        sigma_inv_deriv_fn=sigma_inv_deriv,
+        t_ref=10.0,
+        dt=0.01,
+    )
+    assert result.is_uniform
+    assert result.max_pushforward_deviation_from_1 < 1e-10
+    assert np.allclose(result.measure_z, 1.0, atol=1e-10)
+
+
+def test_frequency_warp_pushforward_measure_is_uniform():
+    basis = make_frequency_preserving_basis(alpha=0.2, window_length=1.0)
+    result = compute_warp_measure_densities(
+        sigma_fn=basis.sigma,
+        sigma_deriv_fn=basis.sigma_deriv,
+        sigma_inv_fn=basis.sigma_inv,
+        sigma_inv_deriv_fn=basis.sigma_inv_deriv,
+        t_ref=10.0,
+        dt=0.01,
+    )
+    assert result.is_uniform
+    assert result.max_pushforward_deviation_from_1 < 1e-8
 
 
 def test_frequency_model_forward_reconstruct_is_finite_small_config():
