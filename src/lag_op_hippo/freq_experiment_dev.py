@@ -51,7 +51,11 @@ from lag_op_hippo.lag_hippo_translated import (
     make_legt_basis,
     make_legt_model,
 )
+import matplotlib.pyplot as plt
+
 from lag_op_hippo.visualizers import (
+    _finalize_figure,
+    get_plot_config,
     lookback_measure_to_absolute_s,
     plot_basis_functions,
     plot_eval_matrix_columns,
@@ -674,6 +678,38 @@ def run_translated_ssm_validation(
     maybe_save_metrics(check, "metrics.json", metrics)
 
 
+def _projected_basis_mode_on_s(
+    *,
+    phi_func,
+    sigma_func,
+    sigma_deriv_func,
+    mode_idx: int,
+    s_abs: np.ndarray,
+    t_present: float,
+    mode: str,
+) -> np.ndarray:
+    """Evaluate basis mode ``φ_n(σ_{t}(s))`` on absolute time ``s``.
+
+    Matches LagHiPPO eval convention: lookback ``τ = t - s``,
+    ``z = σ_0(-τ)``, optional translate-window zeroing via ``σ'``.
+    Future samples (``s > t``) are set to NaN.
+    """
+    s_abs = np.asarray(s_abs, dtype=np.float64)
+    tau = float(t_present) - s_abs
+    out = np.full(s_abs.shape, np.nan, dtype=np.float64)
+    valid = tau >= 0.0
+    if not np.any(valid):
+        return out
+    z = np.asarray(sigma_func(0.0, -tau[valid]), dtype=np.float64)
+    out[valid] = np.asarray(phi_func(mode_idx, z), dtype=np.float64)
+    if mode == "translate":
+        # Outside the active window the basis is truncated (measure zero).
+        w = np.asarray(sigma_deriv_func(0.0, -tau), dtype=np.float64)
+        out = np.where(w > 0.0, out, 0.0)
+        out = np.where(valid, out, np.nan)
+    return out
+
+
 def run_domain_expansion_visualization(
     *,
     check: str,
@@ -697,15 +733,12 @@ def run_domain_expansion_visualization(
 ):
     """Paper Fig. 3-style lag / domain-expansion of one high-order basis mode.
 
-    Ground truth is the unshifted mode at horizon ``T``.  Forward domain
-    expansion is shown two ways that should agree when LagOp recovers HiPPO:
+    Side-by-side panels (forward | backward).  Each panel shows:
 
-    - solid: HiPPO reference ``dA`` applied to a one-hot coefficient vector
-    - dashed: LagOp lag-operator forward map from ``A_∞`` (with LegS tilt
-      correction when ``a_tilt='legs'``)
-
-    Backward lag from ``A_∞`` is also shown for geometry (compress toward
-    older history).
+    - unshifted GT at present ``t``: ``φ_n(σ_t(s))``
+    - **projected GT** under the shifted warp: ``φ_n(σ_{t±Δ}(s))``
+    - operator maps: HiPPO ``dA`` / ``dA^{-1}`` and LagOp ``A_∞`` forward /
+      backward applied to a one-hot coefficient, then reconstructed
 
     ``example_n`` is the coefficient / basis index of the one-hot mode (shown
     in the figure title as n=...). Default is N-2.
@@ -766,14 +799,10 @@ def run_domain_expansion_visualization(
         N, phi_func, sigma_func, sigma_inv_func, dt=dt, verbose=False
     )
     # FouT null mode can make A_∞ singular → pinv for the forward map.
+    # Always apply the scalar e^{±Δt} factors (same for LegS / LegT / FouT / FreqPres).
     A_infty_T_inv = np.linalg.pinv(A_infty.T)
-    if a_tilt == "legs":
-        # HiPPO-LegS stabilization correction (paper / demo.py)
-        A_lag_backward = np.exp(dt) * A_infty
-        A_lag_forward = A_infty_T_inv * np.exp(-dt)
-    else:
-        A_lag_backward = A_infty
-        A_lag_forward = A_infty_T_inv
+    A_lag_backward = np.exp(dt) * A_infty
+    A_lag_forward = A_infty_T_inv * np.exp(-dt)
 
     dA_hippo = hippo_t.dA.detach().cpu().numpy().astype(np.float64)
     # Optional HiPPO backward: free evolution inverse (best-effort; may be ill-conditioned)
@@ -784,6 +813,11 @@ def run_domain_expansion_visualization(
     dA_hippo_t = hippo_t.dA.detach().cpu().to(dtype=dtype)
     dA_hippo_backward_t = torch.as_tensor(dA_hippo_backward, dtype=dtype)
     nan0 = torch.tensor([np.nan], dtype=dtype)
+
+    # Present anchors match discrete grids: lag_t ends at T-dt, lag_t_plus at T.
+    t_now = T - dt
+    t_fwd = T
+    t_bwd = T - 2.0 * dt
 
     # --- Ground truth: unshifted mode at t (LagOp and HiPPO should match) ---
     gt_lag = torch.cat((nan0, lag_t.eval_matrix @ coeff_one_hot)).flip(-1)
@@ -809,50 +843,177 @@ def run_domain_expansion_visualization(
     bwd_hippo = torch.cat((nan0, bwd_hippo)).flip(-1)
 
     vals_t_plus = torch.arange(0.0, T + dt, dt, dtype=dtype)
+    s_abs = vals_t_plus.detach().cpu().numpy().astype(np.float64)
     zoom_n = min(zoom, len(vals_t_plus))
     sl = slice(-zoom_n, None)
 
-    # Primary figure: GT + forward pair (HiPPO solid, LagOp dashed) + lag backward pair
-    # Legend on the left (2 columns); wide canvas so the curve is not squashed.
-    plot_reconstructed_signal(
-        vals_t_plus[sl],
-        gt_lag[sl],
-        [
-            fwd_hippo[sl],
-            fwd_lag[sl],
-            bwd_hippo[sl],
-            bwd_lag[sl],
-            gt_hippo[sl],
-        ],
-        data_name="",  # avoid redundant "… Basis" suffix on every legend entry
-        function_name=rf"$\phi_{{{mode_idx}}}$",
-        domain_name="s",
-        title=(
-            rf"{family_label}: domain expansion"
-            rf" (basis $n={mode_idx}$, $N={N}$;"
-            rf" GT + HiPPO $dA$ vs LagOp $A_\infty$)"
-        ),
-        paper_ready=PAPER_READY_PLOTS,
-        recon_labels_list=[
-            r"HiPPO $dA$ forward",
-            r"LagOp $A_\infty$ forward",
-            r"HiPPO $dA^{-1}$ backward",
-            r"LagOp $A_\infty$ backward",
-            r"HiPPO GT (unshifted)",
-        ],
-        recon_linestyle_list=["-", "--", "-", "--", ":"],
-        recon_color_list=[
-            "tab:blue",  # HiPPO forward (solid)
-            "tab:red",  # LagOp forward (dashed)
-            "tab:orange",  # HiPPO backward (solid)
-            "tab:purple",  # LagOp backward (dashed)
-            "tab:green",  # HiPPO GT
-        ],
-        legend_outside="right",
-        legend_ncols=1,
-        legend_fontsize=11,
-        figsize=(12.5, 5.0),
-        **plot_io(check, f"{prefix}_domain_expansion.png"),
+    # Projected GTs: true re-anchored bases φ(σ_{t±Δ}(s)), not operator maps.
+    gt_proj_fwd = _projected_basis_mode_on_s(
+        phi_func=phi_func,
+        sigma_func=sigma_func,
+        sigma_deriv_func=sigma_deriv_func,
+        mode_idx=mode_idx,
+        s_abs=s_abs,
+        t_present=t_fwd,
+        mode=mode,
+    )
+    gt_proj_bwd = _projected_basis_mode_on_s(
+        phi_func=phi_func,
+        sigma_func=sigma_func,
+        sigma_deriv_func=sigma_deriv_func,
+        mode_idx=mode_idx,
+        s_abs=s_abs,
+        t_present=t_bwd,
+        mode=mode,
+    )
+    # Cross-check: projected GT at t_now should match lag GT on the shared support.
+    gt_proj_now = _projected_basis_mode_on_s(
+        phi_func=phi_func,
+        sigma_func=sigma_func,
+        sigma_deriv_func=sigma_deriv_func,
+        mode_idx=mode_idx,
+        s_abs=s_abs,
+        t_present=t_now,
+        mode=mode,
+    )
+
+    # --- Side-by-side: forward | backward (fewer overlays per panel) ---
+    config = get_plot_config(PAPER_READY_PLOTS)
+    lw = config["line_width"]
+    title_fs = config["axis_label_fontsize"]
+    if title_fs is not None and title_fs > 14:
+        title_fs = max(12, int(title_fs) - 6)
+    leg_fs = config["legend_fontsize"]
+    if leg_fs is not None and leg_fs > 12:
+        leg_fs = 11
+
+    x = np.asarray(vals_t_plus[sl].detach().cpu().numpy(), dtype=np.float64)
+    y_gt = np.asarray(gt_lag[sl].detach().cpu().numpy(), dtype=np.float64)
+    y_fwd_hippo = np.asarray(fwd_hippo[sl].detach().cpu().numpy(), dtype=np.float64)
+    y_fwd_lag = np.asarray(fwd_lag[sl].detach().cpu().numpy(), dtype=np.float64)
+    y_bwd_hippo = np.asarray(bwd_hippo[sl].detach().cpu().numpy(), dtype=np.float64)
+    y_bwd_lag = np.asarray(bwd_lag[sl].detach().cpu().numpy(), dtype=np.float64)
+    y_proj_fwd = gt_proj_fwd[sl]
+    y_proj_bwd = gt_proj_bwd[sl]
+
+    fig, axes = plt.subplots(1, 2, figsize=(14.5, 5.4), sharey=True)
+    ax_fwd, ax_bwd = axes
+
+    # GTs in the background; operator forward/backward maps on top.
+    # Distinct style so projected GTs stay readable even when nearly coincident.
+    proj_kw = dict(
+        color="#00a86b",  # jade
+        linestyle="-.",
+        linewidth=lw,
+        marker="o",
+        markersize=4.0,
+        markevery=1,
+        zorder=1,
+        alpha=0.9,
+    )
+    gt_kw = dict(color="black", linewidth=lw, zorder=1, alpha=0.9)
+    op_kw = dict(linewidth=lw, zorder=3)
+
+    def _mark_time_interval(ax, t_a: float, t_b: float, label_a: str, label_b: str):
+        """Gray band + vertical lines for the lag step ``[t_a, t_b]`` (order-independent)."""
+        lo, hi = (t_a, t_b) if t_a <= t_b else (t_b, t_a)
+        ax.axvspan(lo, hi, facecolor="0.85", edgecolor="none", zorder=0, alpha=0.7)
+        ax.axvline(t_a, color="0.35", linestyle="-", linewidth=1.2, zorder=2, alpha=0.85)
+        ax.axvline(t_b, color="0.35", linestyle="-", linewidth=1.2, zorder=2, alpha=0.85)
+        # Light labels at the top of the axes (in axes coordinates for y).
+        ann_kw = dict(
+            xycoords=("data", "axes fraction"),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=max(9, (leg_fs or 11) - 1),
+            color="0.25",
+            zorder=4,
+        )
+        ax.annotate(label_a, xy=(t_a, 1.0), xytext=(0, 2), **ann_kw)
+        ax.annotate(label_b, xy=(t_b, 1.0), xytext=(0, 2), **ann_kw)
+
+    # Forward panel: GTs first (back), then operator projections (front).
+    _mark_time_interval(ax_fwd, t_now, t_fwd, r"$t$", r"$t+\Delta$")
+    ax_fwd.plot(x, y_gt, **gt_kw, label=r"GT $\phi(\sigma_t)$")
+    ax_fwd.plot(
+        x,
+        y_proj_fwd,
+        **proj_kw,
+        label=r"GT $\phi(\sigma_{t+\Delta})$",
+    )
+    ax_fwd.plot(
+        x,
+        y_fwd_hippo,
+        color="tab:blue",
+        linestyle="-",
+        **op_kw,
+        label=r"HiPPO $dA$ forward",
+    )
+    ax_fwd.plot(
+        x,
+        y_fwd_lag,
+        color="tab:red",
+        linestyle="--",
+        **op_kw,
+        label=r"LagOp $A_\infty$ forward",
+    )
+    ax_fwd.set_title(r"Forward lag ($t\to t+\Delta$)", fontsize=title_fs, pad=8)
+    ax_fwd.set_xlabel(r"$s$", fontsize=config["axis_label_fontsize"])
+    ax_fwd.set_ylabel(
+        rf"$\phi_{{{mode_idx}}}(s)$", fontsize=config["axis_label_fontsize"]
+    )
+
+    # Backward panel: same draw order.
+    _mark_time_interval(ax_bwd, t_now, t_bwd, r"$t$", r"$t-\Delta$")
+    ax_bwd.plot(x, y_gt, **gt_kw, label=r"GT $\phi(\sigma_t)$")
+    ax_bwd.plot(
+        x,
+        y_proj_bwd,
+        **proj_kw,
+        label=r"GT $\phi(\sigma_{t-\Delta})$",
+    )
+    ax_bwd.plot(
+        x,
+        y_bwd_hippo,
+        color="tab:blue",
+        linestyle="-",
+        **op_kw,
+        label=r"HiPPO $dA^{-1}$ backward",
+    )
+    ax_bwd.plot(
+        x,
+        y_bwd_lag,
+        color="tab:red",
+        linestyle="--",
+        **op_kw,
+        label=r"LagOp $A_\infty$ backward",
+    )
+    ax_bwd.set_title(r"Backward lag ($t\to t-\Delta$)", fontsize=title_fs, pad=8)
+    ax_bwd.set_xlabel(r"$s$", fontsize=config["axis_label_fontsize"])
+
+    for ax in axes:
+        ax.tick_params(labelsize=config["tick_label_fontsize"])
+        ax.grid(True, linestyle="--", alpha=0.6)
+        ax.legend(fontsize=leg_fs, loc="best", framealpha=0.95)
+
+    # Main title: context on line 1; generic lag map on line 2 (A named in legend).
+    fig.suptitle(
+        rf"{family_label}: domain expansion "
+        rf"(basis $n={mode_idx}$, $N={N}$; "
+        rf"projected GT $\phi(\sigma_{{t\pm\Delta}})$ + HiPPO $dA$ vs LagOp $A_\infty$)"
+        "\n"
+        r"$\psi_{t\pm\Delta}=A\,\psi_t$",
+        fontsize=title_fs,
+        y=1.04,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.92), w_pad=2.0)
+    io = plot_io(check, f"{prefix}_domain_expansion.png")
+    _finalize_figure(
+        save_path=io["save_path"],
+        show=io["show"],
+        save=io["save"],
+        tight=False,
     )
 
     # Relative errors where finite
@@ -875,6 +1036,9 @@ def run_domain_expansion_visualization(
         "a_tilt": a_tilt,
         "mode": mode,
         "zoom": zoom_n,
+        "t_now": t_now,
+        "t_fwd": t_fwd,
+        "t_bwd": t_bwd,
         "A_infty_fro": float(np.linalg.norm(A_infty, ord="fro")),
         "A_lag_forward_fro": float(np.linalg.norm(A_lag_forward, ord="fro")),
         "dA_hippo_fro": float(np.linalg.norm(dA_hippo, ord="fro")),
@@ -885,6 +1049,12 @@ def run_domain_expansion_visualization(
         "rel_err_forward_waveform_hippo_vs_lag": _rel_err(fwd_hippo, fwd_lag),
         "rel_err_gt_hippo_vs_lag": _rel_err(gt_hippo, gt_lag),
         "rel_err_backward_waveform_hippo_vs_lag": _rel_err(bwd_hippo, bwd_lag),
+        "rel_err_gt_lag_vs_proj_now": _rel_err(gt_lag, gt_proj_now),
+        "rel_err_fwd_lag_vs_proj_fwd": _rel_err(fwd_lag, gt_proj_fwd),
+        "rel_err_fwd_hippo_vs_proj_fwd": _rel_err(fwd_hippo, gt_proj_fwd),
+        "rel_err_bwd_lag_vs_proj_bwd": _rel_err(bwd_lag, gt_proj_bwd),
+        "rel_err_bwd_hippo_vs_proj_bwd": _rel_err(bwd_hippo, gt_proj_bwd),
+        "rel_err_gt_hippo_vs_proj_now": _rel_err(gt_hippo, gt_proj_now),
     }
     print(f"{check} domain expansion ({family_label})")
     for key, value in metrics.items():
