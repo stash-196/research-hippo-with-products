@@ -10,6 +10,7 @@ __pycache__/
 *.pyo
 *.DS_Store
 src/research_hippo_with_products/dataset/temp_save/*
+temp_save/*
 *.pkl
 
 ### Python ###

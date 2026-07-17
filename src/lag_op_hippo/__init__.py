@@ -44,4 +44,5 @@ from .visualizers import (
     plot_inner_product_matrix,
     plot_roundtrip_error,
     plot_measure_density_warp,
+    plot_sigma_warp_pair,
 )

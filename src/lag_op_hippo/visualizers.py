@@ -4,12 +4,30 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def _finalize_figure(save_path=None, show=True, dpi=150):
-    plt.tight_layout()
-    if save_path is not None:
+def _finalize_figure(save_path=None, show=True, save=True, dpi=150, tight=True):
+    """Close out a figure: optionally save to disk and/or display in a window.
+
+    Parameters
+    ----------
+    save_path :
+        Destination path when ``save`` is True. Ignored if ``save`` is False
+        or ``save_path`` is None.
+    show :
+        If True, call ``plt.show()`` (interactive window / notebook inline).
+        If False, close the figure without displaying.
+    save :
+        If True and ``save_path`` is set, write the figure to disk.
+    tight :
+        If True, call ``plt.tight_layout()`` before save/show. Set False when
+        the caller already adjusted margins (e.g. outside legends).
+    """
+    if tight:
+        plt.tight_layout()
+    if save and save_path is not None:
         path = Path(save_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(path, dpi=dpi, bbox_inches="tight")
+        # bbox_inches='tight' can clip an outside legend; keep full figure canvas.
+        plt.savefig(path, dpi=dpi, bbox_inches="tight" if tight else None)
     if show:
         plt.show()
     else:
@@ -64,10 +82,16 @@ def plot_reconstructed_signal(
     recon_linestyle_list=None,
     recon_color_list=None,
     legend_loc="best",
+    legend_ncols=None,
+    legend_bbox_to_anchor=None,
+    legend_outside=False,
+    legend_fontsize=None,
+    figsize=None,
     xlim=None,
     ylim=None,
     save_path=None,
     show=True,
+    save=True,
 ):
     """
     Plots an original and a reconstructed signal using a shared configuration.
@@ -80,16 +104,46 @@ def plot_reconstructed_signal(
         domain_name (str, optional): The name of the x-axis domain. Defaults to "s".
         title (str, optional): An optional prefix for the plot title. Defaults to "".
         paper_ready (bool, optional): If True, applies publication-quality formatting. Defaults to False.
+        legend_outside: False, True/``"below"``, ``"left"``, or ``"right"``
+            (legend panel beside the axes so curves are not covered).
+        legend_ncols: Number of legend columns.
+        legend_bbox_to_anchor: Optional explicit legend anchor.
+        legend_fontsize: Optional override for legend text size.
+        figsize: Optional ``(w, h)`` figure size in inches.
+        save_path: File path used when ``save`` is True.
+        show: If True, display the figure in a window / notebook cell.
+        save: If True and ``save_path`` is set, write the figure to disk.
     """
     # --- Get the configuration dictionary ---
     config = get_plot_config(paper_ready)
 
-    # --- Create the figure and plot the data ---
-    plt.figure(figsize=(8, 5))
-    plt.plot(
+    # Normalize outside placement mode
+    if legend_outside is True:
+        legend_outside = "below"
+    outside_mode = legend_outside if legend_outside else None
+
+    if figsize is None:
+        if outside_mode in ("left", "right"):
+            figsize = (12.5, 5.0)  # wide: side legend + full-width curve
+        elif outside_mode == "below":
+            figsize = (9.0, 5.8)
+        else:
+            figsize = (9.0, 5.0)
+
+    fig = plt.figure(figsize=figsize)
+    ax = fig.add_subplot(111)
+
+    def _series_label(base: str) -> str:
+        base = base.strip()
+        extra = (data_name or "").strip()
+        if not extra:
+            return base
+        return f"{base} {extra}".strip()
+
+    ax.plot(
         x,
         original,
-        label=f"Original {data_name}",  # {function_name}({domain_name})",
+        label=_series_label("Original"),
         linewidth=config["line_width"],
         color="black",
     )
@@ -102,54 +156,99 @@ def plot_reconstructed_signal(
             recon_color_list = [None] * len(reconstructed)
 
         for i, rec in enumerate(reconstructed):
-            plt.plot(
+            ax.plot(
                 x,
                 rec,
-                label=f"{recon_labels_list[i]} {data_name}",  # {function_name}({domain_name})",
+                label=_series_label(recon_labels_list[i]),
                 linestyle=recon_linestyle_list[i],
                 linewidth=config["line_width"],
                 color=recon_color_list[i],
             )
     else:
-        plt.plot(
+        ax.plot(
             x,
             np.real(reconstructed),
-            label=f"Reconstructed {data_name}",  # {function_name}({domain_name})",
+            label=_series_label("Reconstructed"),
             linestyle="--",
             color="red",
             linewidth=config["line_width"],
         )
 
     # --- Apply text size, labels, and conditional title ---
-    plt.xlabel(f"{domain_name}", fontsize=config["axis_label_fontsize"])
-    plt.ylabel(
-        f"{data_name} {function_name}({domain_name})",
+    ax.set_xlabel(f"{domain_name}", fontsize=config["axis_label_fontsize"])
+    ylabel_prefix = (data_name or "").strip()
+    ax.set_ylabel(
+        f"{ylabel_prefix} {function_name}({domain_name})".strip(),
         fontsize=config["axis_label_fontsize"],
     )
-    plt.xticks(fontsize=config["tick_label_fontsize"])
-    plt.yticks(fontsize=config["tick_label_fontsize"])
+    ax.tick_params(axis="both", labelsize=config["tick_label_fontsize"])
 
     if paper_ready and title:
-        plt.title(title, fontsize=config["axis_label_fontsize"])
+        ax.set_title(title, fontsize=config["axis_label_fontsize"])
     elif not paper_ready:
         full_title = (
             title + " " if title else ""
         ) + f"Reconstruction of {data_name} in {domain_name} domain"
-        plt.title(full_title, fontsize=config["axis_label_fontsize"])
-    # y limits
+        ax.set_title(full_title, fontsize=config["axis_label_fontsize"])
     if ylim is not None:
-        plt.ylim(ylim)
+        ax.set_ylim(ylim)
     if xlim is not None:
-        plt.xlim(xlim)
+        ax.set_xlim(xlim)
 
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.legend(
-        fontsize=config["legend_fontsize"],
-        loc=legend_loc if legend_loc != "best" else "upper center",
-        bbox_to_anchor=(0.5, 1.1) if legend_loc == "best" else None,
-        ncol=2,
+    ax.grid(True, linestyle="--", alpha=0.6)
+
+    # --- Legend placement ---
+    if legend_ncols is None:
+        legend_ncols = 1 if outside_mode in ("left", "right") else 2
+
+    if legend_bbox_to_anchor is None and outside_mode == "left":
+        # Anchor legend's upper-right corner to the upper-left of the axes.
+        legend_loc = "upper right"
+        legend_bbox_to_anchor = (-0.04, 1.0)
+    elif legend_bbox_to_anchor is None and outside_mode == "right":
+        # Anchor legend's upper-left corner to the upper-right of the axes.
+        legend_loc = "upper left"
+        legend_bbox_to_anchor = (1.02, 1.0)
+    elif legend_bbox_to_anchor is None and outside_mode == "below":
+        legend_loc = "upper center"
+        legend_bbox_to_anchor = (0.5, -0.16)
+    elif legend_loc == "best" and legend_bbox_to_anchor is None:
+        legend_loc = "upper left"
+        legend_bbox_to_anchor = None
+
+    leg_fs = (
+        legend_fontsize
+        if legend_fontsize is not None
+        else config["legend_fontsize"]
     )
-    _finalize_figure(save_path=save_path, show=show)
+    # Slightly smaller than axis labels so multi-column legends fit cleanly.
+    if leg_fs is None:
+        leg_fs = 11
+    elif paper_ready and legend_fontsize is None and outside_mode:
+        leg_fs = min(int(leg_fs), 12)
+
+    ax.legend(
+        fontsize=leg_fs,
+        loc=legend_loc,
+        bbox_to_anchor=legend_bbox_to_anchor,
+        ncol=legend_ncols,
+        framealpha=0.95,
+        borderaxespad=0.4,
+        handlelength=2.2,
+        columnspacing=1.0,
+    )
+
+    if outside_mode == "left":
+        fig.subplots_adjust(left=0.34, right=0.98, top=0.90, bottom=0.12)
+        _finalize_figure(save_path=save_path, show=show, save=save, tight=False)
+    elif outside_mode == "right":
+        fig.subplots_adjust(left=0.10, right=0.72, top=0.90, bottom=0.12)
+        _finalize_figure(save_path=save_path, show=show, save=save, tight=False)
+    elif outside_mode == "below":
+        fig.subplots_adjust(left=0.10, right=0.98, top=0.90, bottom=0.30)
+        _finalize_figure(save_path=save_path, show=show, save=save, tight=False)
+    else:
+        _finalize_figure(save_path=save_path, show=show, save=save, tight=True)
 
 
 def plot_basis_functions(
@@ -167,6 +266,7 @@ def plot_basis_functions(
     legend_loc="best",
     save_path=None,
     show=True,
+    save=True,
 ):
     """
     Plot a subset of basis functions against the domain.
@@ -231,7 +331,230 @@ def plot_basis_functions(
         fontsize=config["legend_fontsize"],
         loc=legend_loc,
     )
-    _finalize_figure(save_path=save_path, show=show)
+    _finalize_figure(save_path=save_path, show=show, save=save)
+
+
+def _wrap_subplot_title(title: str, max_chars: int = 36) -> str:
+    """Insert newlines so long subplot titles do not collide across panels.
+
+    Prefers existing newlines, then breaks before parentheticals / after colons,
+    and finally falls back to space-aware wrapping (math segments kept intact
+    when possible by not splitting inside ``$...$``).
+    """
+    if not title:
+        return title
+    title = str(title).strip()
+    if "\n" in title:
+        return title
+
+    # Prefer a break before a trailing parenthetical note.
+    if " (" in title:
+        head, tail = title.split(" (", 1)
+        if len(head) >= 12:
+            return head + "\n(" + tail
+
+    # Prefer a break after the first colon (e.g. "LagOp FouT at $t=...$: ...").
+    if ": " in title:
+        head, tail = title.split(": ", 1)
+        if len(head) >= 8 and len(tail) >= 8:
+            # Further wrap the tail if still long.
+            if len(tail) > max_chars and " (" in tail:
+                t0, t1 = tail.split(" (", 1)
+                tail = t0 + "\n(" + t1
+            return head + ":\n" + tail
+
+    # Generic wrap that avoids cutting math mode `$...$`.
+    words = title.split(" ")
+    lines: list[str] = []
+    cur = ""
+    in_math = False
+    for w in words:
+        in_math = in_math ^ (w.count("$") % 2 == 1) if "$" in w else in_math
+        trial = w if not cur else cur + " " + w
+        if len(trial) <= max_chars or not cur or in_math:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+            in_math = w.count("$") % 2 == 1
+    if cur:
+        lines.append(cur)
+    return "\n".join(lines)
+
+
+def plot_sigma_warp_pair(
+    s_vals,
+    z_vals,
+    sigma_vals,
+    sigma_deriv_vals,
+    title_s="",
+    title_z="",
+    labels=None,
+    paper_ready=False,
+    legend_loc="best",
+    save_path=None,
+    show=True,
+    save=True,
+):
+    """Side-by-side view of the warp map vs $s$ and vs $z$.
+
+    Left: $\\sigma_t(s)$ and $\\sigma_t'(s)$ against physical time $s$.
+    Right: the same series plotted against $z=\\sigma_t(s)$ (canonical domain).
+    """
+    config = get_plot_config(paper_ready)
+    s_vals = np.asarray(s_vals, dtype=np.float64)
+    z_vals = np.asarray(z_vals, dtype=np.float64)
+    series = [
+        np.asarray(sigma_deriv_vals, dtype=np.float64),
+        np.asarray(sigma_vals, dtype=np.float64),
+    ]
+    if labels is None:
+        labels = [r"$\sigma_t'(s)$", r"$\sigma_t(s)$"]
+
+    # Slightly shorter titles + extra top margin so multi-line titles do not collide.
+    title_fs = config["axis_label_fontsize"]
+    if title_fs is not None and title_fs > 14:
+        title_fs = max(12, title_fs - 6)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5.6))
+    title_s = _wrap_subplot_title(title_s or r"Warp on $s$")
+    title_z = _wrap_subplot_title(title_z or r"Warp on $z$")
+
+    # Left: vs s
+    for y, lab in zip(series, labels):
+        axes[0].plot(s_vals, y, label=lab, linewidth=config["line_width"])
+    axes[0].set_xlabel(r"$s$", fontsize=config["axis_label_fontsize"])
+    axes[0].set_ylabel("value", fontsize=config["axis_label_fontsize"])
+    axes[0].tick_params(labelsize=config["tick_label_fontsize"])
+    axes[0].set_title(title_s, fontsize=title_fs, pad=10)
+    axes[0].grid(True, linestyle="--", alpha=0.6)
+    axes[0].legend(fontsize=config["legend_fontsize"], loc=legend_loc)
+
+    # Right: vs z
+    for y, lab in zip(series, labels):
+        axes[1].plot(z_vals, y, label=lab, linewidth=config["line_width"])
+    axes[1].set_xlabel(r"$z=\sigma_t(s)$", fontsize=config["axis_label_fontsize"])
+    axes[1].set_ylabel("value", fontsize=config["axis_label_fontsize"])
+    axes[1].tick_params(labelsize=config["tick_label_fontsize"])
+    axes[1].set_title(title_z, fontsize=title_fs, pad=10)
+    axes[1].grid(True, linestyle="--", alpha=0.6)
+    axes[1].legend(fontsize=config["legend_fontsize"], loc=legend_loc)
+
+    fig.tight_layout(rect=(0, 0, 1, 0.96), w_pad=2.0)
+    _finalize_figure(save_path=save_path, show=show, save=save, tight=False)
+
+
+def plot_measure_vs_lookback(
+    lookback,
+    measures,
+    labels=None,
+    linestyles=None,
+    colors=None,
+    title="",
+    ylabel=r"$\omega(\tau)$",
+    xlabel=r"lookback $\tau$ (present at $0$)",
+    paper_ready=False,
+    legend_loc="best",
+    xlim=None,
+    ylim=None,
+    save_path=None,
+    show=True,
+    save=True,
+):
+    """Plot one or more measure densities against lookback time.
+
+    This is the coordinate used by the original HiPPO implementation
+    (``vals`` / ``measure``): ``tau = 0`` is the present and larger
+    ``tau`` is older history. Multiple series can be overlaid for
+    HiPPO vs LagOp comparison.
+    """
+    config = get_plot_config(paper_ready)
+    lookback = np.asarray(lookback, dtype=np.float64)
+
+    if not isinstance(measures, (list, tuple)):
+        measures = [measures]
+    measures = [np.asarray(m, dtype=np.float64) for m in measures]
+
+    if labels is None:
+        labels = [rf"measure[{i}]" for i in range(len(measures))]
+    if linestyles is None:
+        linestyles = ["-"] * len(measures)
+        if len(measures) > 1:
+            linestyles = ["-", "-."] + ["--"] * (len(measures) - 2)
+    if colors is None:
+        colors = [None] * len(measures)
+        if len(measures) >= 1:
+            colors[0] = "black"
+        if len(measures) >= 2:
+            colors[1] = "tab:red"
+
+    plt.figure(figsize=(8, 5))
+    for measure, label, ls, color in zip(measures, labels, linestyles, colors):
+        plt.plot(
+            lookback,
+            measure,
+            label=label,
+            linestyle=ls,
+            linewidth=config["line_width"],
+            color=color,
+        )
+
+    plt.xlabel(xlabel, fontsize=config["axis_label_fontsize"])
+    plt.ylabel(ylabel, fontsize=config["axis_label_fontsize"])
+    plt.xticks(fontsize=config["tick_label_fontsize"])
+    plt.yticks(fontsize=config["tick_label_fontsize"])
+    if paper_ready and title:
+        plt.title(title, fontsize=config["axis_label_fontsize"])
+    elif not paper_ready:
+        plt.title(title or "Measure vs lookback", fontsize=config["axis_label_fontsize"])
+    if xlim is not None:
+        plt.xlim(xlim)
+    if ylim is not None:
+        plt.ylim(ylim)
+    plt.grid(True, linestyle="--", alpha=0.6)
+    plt.legend(fontsize=config["legend_fontsize"], loc=legend_loc)
+    _finalize_figure(save_path=save_path, show=show, save=save)
+
+
+def plot_eval_matrix_columns(
+    lookback,
+    eval_matrix,
+    title="",
+    domain_name=r"\tau",
+    basis_type="eval",
+    num_functions_front=None,
+    num_functions_back=None,
+    paper_ready=False,
+    legend_loc="best",
+    save_path=None,
+    show=True,
+    save=True,
+):
+    """Plot columns of an evaluation / basis matrix vs lookback.
+
+    Thin wrapper around :func:`plot_basis_functions` that accepts a
+    ``(L, N)`` eval matrix (as stored on ``HiPPO`` / ``LagHiPPO``).
+    """
+    eval_matrix = np.asarray(eval_matrix, dtype=np.float64)
+    if eval_matrix.ndim != 2:
+        raise ValueError(f"eval_matrix must be 2D (L, N); got shape {eval_matrix.shape}")
+    n_basis = eval_matrix.shape[1]
+    return plot_basis_functions(
+        x=lookback,
+        Bases=eval_matrix,
+        ks=range(n_basis),
+        data_name="eval",
+        domain_name=domain_name,
+        basis_type=basis_type,
+        num_functions_front=num_functions_front,
+        num_functions_back=num_functions_back,
+        title=title,
+        paper_ready=paper_ready,
+        legend_loc=legend_loc,
+        save_path=save_path,
+        show=show,
+        save=save,
+    )
 
 
 def plot_measure_density_warp(
@@ -247,6 +570,7 @@ def plot_measure_density_warp(
     z_ylim=(-0.05, 1.15),
     save_path=None,
     show=True,
+    save=True,
     verbose=False,
 ):
     """Plot measure density on $s$ and its pushforward on $z$.
@@ -325,7 +649,7 @@ def plot_measure_density_warp(
     if title:
         fig.suptitle(title, fontsize=config["axis_label_fontsize"], y=1.02)
 
-    _finalize_figure(save_path=save_path, show=show)
+    _finalize_figure(save_path=save_path, show=show, save=save)
     return {
         "max_pushforward_deviation_from_1": result.max_pushforward_deviation_from_1,
         "mean_pushforward_deviation_from_1": result.mean_pushforward_deviation_from_1,
@@ -338,6 +662,7 @@ def plot_measure_density_warp(
 def plot_roundtrip_error(
     x,
     error,
+    s_roundtrip=None,
     domain_name="s",
     title=r"$|\,s - \sigma_t^{-1}(\sigma_t(s))\,|$",
     ylabel=r"$|\,s - \sigma_t^{-1}(\sigma_t(s))\,|$",
@@ -346,28 +671,113 @@ def plot_roundtrip_error(
     legend_loc="best",
     save_path=None,
     show=True,
+    save=True,
 ):
-    """Plot absolute error of a warp roundtrip map on the time domain."""
+    """Plot warp roundtrip error, optionally with original and reconstructed $s$.
+
+    Parameters
+    ----------
+    x :
+        Original domain samples $s$ (horizontal axis).
+    error :
+        Absolute roundtrip error $|s - \\hat s|$.
+    s_roundtrip :
+        Optional reconstructed samples $\\hat s = \\sigma_t^{-1}(\\sigma_t(s))$.
+        When provided, two side-by-side subplots are drawn:
+        - left: $s$ (identity) and $\\hat s$;
+        - right: absolute error.
+        This makes truncation non-invertibility easy to see (old $s$ map to
+        the window edge while error grows into the past).
+    """
     config = get_plot_config(paper_ready)
-    plt.figure(figsize=(8, 5))
-    plt.plot(
+    x = np.asarray(x, dtype=np.float64)
+    error = np.asarray(error, dtype=np.float64)
+
+    if s_roundtrip is None:
+        plt.figure(figsize=(8, 5))
+        plt.plot(
+            x,
+            error,
+            label=label,
+            linewidth=config["line_width"],
+            color="black",
+        )
+        plt.xlabel(rf"${domain_name}$", fontsize=config["axis_label_fontsize"])
+        plt.ylabel(ylabel, fontsize=config["axis_label_fontsize"])
+        plt.xticks(fontsize=config["tick_label_fontsize"])
+        plt.yticks(fontsize=config["tick_label_fontsize"])
+        if paper_ready and title:
+            plt.title(title, fontsize=config["axis_label_fontsize"])
+        elif not paper_ready:
+            plt.title(
+                title or "Roundtrip error", fontsize=config["axis_label_fontsize"]
+            )
+        plt.grid(True, linestyle="--", alpha=0.6)
+        plt.legend(fontsize=config["legend_fontsize"], loc=legend_loc)
+        _finalize_figure(save_path=save_path, show=show, save=save)
+        return
+
+    s_hat = np.asarray(s_roundtrip, dtype=np.float64)
+    fig, (ax_s, ax_err) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Left: original s vs round-tripped ŝ
+    ax_s.plot(
+        x,
+        x,
+        label=rf"${domain_name}$ (original)",
+        linewidth=config["line_width"],
+        color="black",
+        linestyle="-",
+    )
+    ax_s.plot(
+        x,
+        s_hat,
+        label=rf"$\hat{{{domain_name}}}=\sigma_t^{{-1}}(\sigma_t({domain_name}))$",
+        linewidth=config["line_width"],
+        color="tab:blue",
+        linestyle="--",
+    )
+    ax_s.set_xlabel(rf"${domain_name}$", fontsize=config["axis_label_fontsize"])
+    ax_s.set_ylabel(
+        rf"${domain_name}$, $\hat{{{domain_name}}}$",
+        fontsize=config["axis_label_fontsize"],
+    )
+    ax_s.tick_params(labelsize=config["tick_label_fontsize"])
+    ax_s.set_title(
+        rf"Roundtrip value: ${domain_name}$ vs $\hat{{{domain_name}}}$",
+        fontsize=config["axis_label_fontsize"],
+    )
+    ax_s.grid(True, linestyle="--", alpha=0.6)
+    ax_s.legend(
+        fontsize=config["legend_fontsize"],
+        loc=legend_loc if legend_loc != "best" else "upper left",
+    )
+
+    # Right: absolute error
+    ax_err.plot(
         x,
         error,
         label=label,
         linewidth=config["line_width"],
-        color="black",
+        color="tab:red",
     )
-    plt.xlabel(rf"${domain_name}$", fontsize=config["axis_label_fontsize"])
-    plt.ylabel(ylabel, fontsize=config["axis_label_fontsize"])
-    plt.xticks(fontsize=config["tick_label_fontsize"])
-    plt.yticks(fontsize=config["tick_label_fontsize"])
-    if paper_ready and title:
-        plt.title(title, fontsize=config["axis_label_fontsize"])
-    elif not paper_ready:
-        plt.title(title or "Roundtrip error", fontsize=config["axis_label_fontsize"])
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.legend(fontsize=config["legend_fontsize"], loc=legend_loc)
-    _finalize_figure(save_path=save_path, show=show)
+    ax_err.set_xlabel(rf"${domain_name}$", fontsize=config["axis_label_fontsize"])
+    ax_err.set_ylabel(ylabel, fontsize=config["axis_label_fontsize"])
+    ax_err.tick_params(labelsize=config["tick_label_fontsize"])
+    ax_err.set_title(
+        r"Absolute roundtrip error",
+        fontsize=config["axis_label_fontsize"],
+    )
+    ax_err.grid(True, linestyle="--", alpha=0.6)
+    ax_err.legend(
+        fontsize=config["legend_fontsize"],
+        loc=legend_loc if legend_loc != "best" else "upper right",
+    )
+
+    if title:
+        fig.suptitle(title, fontsize=config["axis_label_fontsize"], y=1.02)
+
+    _finalize_figure(save_path=save_path, show=show, save=save)
 
 
 def plot_inner_product_matrix(
@@ -376,6 +786,7 @@ def plot_inner_product_matrix(
     paper_ready=False,
     save_path=None,
     show=True,
+    save=True,
     vmin=None,
     vmax=None,
 ):
@@ -388,4 +799,4 @@ def plot_inner_product_matrix(
     plt.ylabel("basis index n", fontsize=config["axis_label_fontsize"])
     if title:
         plt.title(title, fontsize=config["axis_label_fontsize"])
-    _finalize_figure(save_path=save_path, show=show)
+    _finalize_figure(save_path=save_path, show=show, save=save)

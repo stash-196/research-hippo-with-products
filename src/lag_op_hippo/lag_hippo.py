@@ -93,7 +93,8 @@ def compute_A_infty(
     start_time = time.time()
     z_nodes_a, z_weights_a = get_gauss_quadrature(quad_order, 0, 1)
     eval_n = vectorized_basis(phi_func, n_vals, z_nodes_a)
-    warped_z = sigma(0, sigma_inv_func(dt, z_nodes_a))
+    # Composition σ_0 ∘ σ_Δ^{-1}: use the *provided* warp, not the module-level LegS σ.
+    warped_z = sigma_func(0, sigma_inv_func(dt, z_nodes_a))
     eval_m = vectorized_basis(phi_func, n_vals, warped_z)
     A_infty = np.einsum("i,ik,il->kl", z_weights_a, eval_n, eval_m)
     end_time = time.time()

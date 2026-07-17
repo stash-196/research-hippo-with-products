@@ -75,19 +75,38 @@ class TruncatedTranslateBasis:
 
 
 class LegTBasis(TruncatedTranslateBasis):
-    """Legendre basis on z with HiPPO-LegT normalization."""
+    """Legendre basis on z, faithful to Gu HiPPO-LegT on lookback.
+
+    Warp is ``z = 1 - tau/L`` (present at ``z=1``). Gu evaluates
+    ``sqrt(2n+1) (-1)^n P_n(2 tau - 1)`` on lookback ``tau``.  Substituting
+    ``tau = L(1-z)`` (unit window ``L=1``) and Legendre parity yields exactly
+
+        phi_n(z) = sqrt(2n+1) P_n(2z - 1)
+
+    i.e. **no** extra ``(-1)^n`` on top of the flipped warp (that factor is
+    already accounted for by ``z = 1 - tau``).
+    """
 
     def phi(self, n, z):
         z = np.asarray(z, dtype=np.float64)
         y = 2.0 * z - 1.0
-        return np.sqrt(2 * n + 1) * eval_legendre(n, y) * ((-1.0) ** n)
+        return np.sqrt(2 * n + 1) * eval_legendre(n, y)
 
     def phi_deriv(self, n, z):
-        return ((-1.0) ** n) * _legendre_phi_deriv(n, z)
+        return _legendre_phi_deriv(n, z)
 
 
 class FouTBasis(TruncatedTranslateBasis):
-    """Fourier (cos/sin) basis on z matching HiPPO-FouT normalization."""
+    """Fourier (cos/sin) basis on z, faithful to Gu HiPPO-FouT on lookback.
+
+    Gu evaluates cos/sin in **lookback** ``tau`` (present at 0).  With the
+    LagOp warp ``z = 1 - tau/L`` we therefore use the lookback coordinate
+    ``u = 1 - z`` (= ``tau/L``) inside the trig functions so that
+
+        phi(z) = Gu_basis(tau = L(1-z))
+
+    matches the original ``basis(..., method='fourier')`` eval matrix.
+    """
 
     @staticmethod
     def _check_n_even(N: int) -> None:
@@ -96,24 +115,30 @@ class FouTBasis(TruncatedTranslateBasis):
 
     def phi(self, n, z):
         z = np.asarray(z, dtype=np.float64)
+        # Lookback-aligned coordinate (Gu): u = tau/L = 1 - z
+        u = 1.0 - z
         if n == 0:
             return np.ones_like(z, dtype=np.float64)
         m = n // 2
-        arg = 2.0 * np.pi * m * z
+        arg = 2.0 * np.pi * m * u
         if n % 2 == 0:
             return np.sqrt(2.0) * np.cos(arg)
         return np.sqrt(2.0) * np.sin(arg)
 
     def phi_deriv(self, n, z):
+        # d/dz = d/du * du/dz with u = 1 - z, du/dz = -1
         z = np.asarray(z, dtype=np.float64)
+        u = 1.0 - z
         if n == 0:
             return np.zeros_like(z, dtype=np.float64)
         m = n // 2
-        arg = 2.0 * np.pi * m * z
-        darg = 2.0 * np.pi * m
+        arg = 2.0 * np.pi * m * u
+        darg_du = 2.0 * np.pi * m
         if n % 2 == 0:
-            return -np.sqrt(2.0) * np.sin(arg) * darg
-        return np.sqrt(2.0) * np.cos(arg) * darg
+            # d/dz [sqrt2 cos(arg(u))] = -sqrt2 sin(arg) * darg_du * (-1)
+            return np.sqrt(2.0) * np.sin(arg) * darg_du
+        # d/dz [sqrt2 sin(arg(u))] = sqrt2 cos(arg) * darg_du * (-1)
+        return -np.sqrt(2.0) * np.cos(arg) * darg_du
 
 
 def make_truncated_translate_basis(window_length: float = 1.0, eps: float = 1e-8):
