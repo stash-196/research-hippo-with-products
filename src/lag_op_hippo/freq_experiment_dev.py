@@ -52,6 +52,7 @@ from lag_op_hippo.lag_hippo_translated import (
     make_legt_model,
 )
 from lag_op_hippo.visualizers import (
+    lookback_measure_to_absolute_s,
     plot_basis_functions,
     plot_eval_matrix_columns,
     plot_inner_product_matrix,
@@ -76,6 +77,7 @@ WINDOW_L = 1.0
 DT = 0.001
 T_LONG = 10.0
 T_REF = T_LONG  # reference time t for warp/measure diagnostic plots
+T_RECON = 5.0  # horizon for Check 03 reconstruction (u and û on s∈[0,T_RECON])
 T_DOMAIN = 3.0  # horizon for domain-expansion (paper Fig. 3 style)
 DOMAIN_ZOOM = 20  # samples near the present for lag-shift zoom
 PAPER_READY_PLOTS = True
@@ -159,8 +161,13 @@ def plot_model_geometry(
     num_basis: int | None = None,
     plot_measure: bool = True,
     plot_eval: bool = True,
+    sigma_func=None,
 ):
-    """Plot measure vs lookback and/or eval-matrix columns for one model."""
+    """Plot measure vs lookback and/or eval-matrix columns for one model.
+
+    Eval matrices are shown side-by-side vs lookback $\\tau$ and vs
+    $z=\\sigma(0,-\\tau)$ when ``sigma_func`` is provided.
+    """
     lookback = _as_numpy(lookback)
     measure = _as_numpy(measure)
     eval_matrix = _as_numpy(eval_matrix)
@@ -178,13 +185,20 @@ def plot_model_geometry(
             **plot_io(check, f"{file_prefix}_measure_vs_lookback.png"),
         )
     if plot_eval:
+        z_vals = None
+        if sigma_func is not None:
+            # LagOp / HiPPO eval_matrix is indexed by lookback τ; z = σ(0, -τ).
+            z_vals = np.asarray(sigma_func(0.0, -lookback), dtype=np.float64)
         plot_eval_matrix_columns(
             lookback,
             eval_matrix,
-            title=rf"{model_label}: eval-matrix columns (first {n_show})",
+            title=rf"{model_label}: eval (first {n_show})",
+            title_s=rf"{model_label}: vs $s$ (present on the right)",
+            title_z=rf"{model_label}: vs $z=\sigma(0,-(t-s))$",
             basis_type=file_prefix,
             num_functions_front=n_show,
             paper_ready=PAPER_READY_PLOTS,
+            z_vals=z_vals,
             **plot_io(check, f"{file_prefix}_eval_matrix.png"),
         )
 
@@ -195,23 +209,28 @@ def plot_hippo_lagop_geometry_comparison(
     hippo_model: HiPPO | None,
     lag_model: LagHiPPO,
     family_label: str,
+    t_ref: float | None = None,
+    title_measure: str | None = None,
 ):
-    """Measure + eval-matrix visuals for HiPPO (optional) and LagOp.
+    """Eval-matrix visuals + (when HiPPO exists) measure comparison.
 
-    Original HiPPO stores lookback on ``vals`` with present at ``tau=0``.
-    LagOp uses the same convention for ``vals`` / ``measure`` / ``eval_matrix``.
+    HiPPO vs LagOp measures are absorbed into the left panel of
+    ``measure_density.png`` (absolute time ``s``), so a separate
+    ``measure_vs_lookback_overlay.png`` is not written.  The right panel of
+    that figure remains the LagOp pushforward-to-``z`` diagnostic.
 
-    When both models share a lookback grid, measures are shown only as an
-    overlay (individual measure plots would be duplicates). Eval matrices stay
-    separate (no overlay). If there is no HiPPO counterpart (e.g. freq-preserving),
-    LagOp measure is plotted individually.
+    If there is no HiPPO counterpart (e.g. freq-preserving), LagOp measure is
+    already plotted by ``plot_sigma_warp_diagnostics``; here we only plot eval.
     """
     lag_lookback = _as_numpy(lag_model.vals)
     lag_measure = _as_numpy(lag_model.measure)
     lag_eval = _as_numpy(lag_model.eval_matrix)
+    t_ref = float(T_REF if t_ref is None else t_ref)
+
+    # Use LagOp warp to map lookback → z for both models (same z-axis for fair panels).
+    sigma_for_z = lag_model.sigma_func
 
     if hippo_model is None:
-        # No comparison target: keep individual LagOp measure + eval.
         plot_model_geometry(
             check=check,
             lookback=lag_lookback,
@@ -219,8 +238,9 @@ def plot_hippo_lagop_geometry_comparison(
             eval_matrix=lag_eval,
             model_label=f"LagOp {family_label}",
             file_prefix="lagop",
-            plot_measure=True,
+            plot_measure=False,  # measure already in measure_density.png
             plot_eval=True,
+            sigma_func=sigma_for_z,
         )
         return
 
@@ -228,12 +248,7 @@ def plot_hippo_lagop_geometry_comparison(
     hippo_measure = _as_numpy(hippo_model.measure)
     hippo_eval = _as_numpy(hippo_model.eval_matrix)
 
-    can_overlay_measure = hippo_lookback.shape == lag_lookback.shape and np.allclose(
-        hippo_lookback, lag_lookback
-    )
-
-    # Eval matrices always plotted per model (not overlaid).
-    # Measures: overlay only when comparable; otherwise individual plots.
+    # Per-model eval matrices (no basis overlay): each as (τ | z) side-by-side.
     plot_model_geometry(
         check=check,
         lookback=lag_lookback,
@@ -241,8 +256,9 @@ def plot_hippo_lagop_geometry_comparison(
         eval_matrix=lag_eval,
         model_label=f"LagOp {family_label}",
         file_prefix="lagop",
-        plot_measure=not can_overlay_measure,
+        plot_measure=False,
         plot_eval=True,
+        sigma_func=sigma_for_z,
     )
     plot_model_geometry(
         check=check,
@@ -251,19 +267,36 @@ def plot_hippo_lagop_geometry_comparison(
         eval_matrix=hippo_eval,
         model_label=f"HiPPO {family_label}",
         file_prefix="hippo",
-        plot_measure=not can_overlay_measure,
+        plot_measure=False,
         plot_eval=True,
+        sigma_func=sigma_for_z,
     )
 
-    if can_overlay_measure:
-        plot_measure_vs_lookback(
-            hippo_lookback,
-            [hippo_measure, lag_measure],
-            labels=[f"HiPPO {family_label}", f"LagOp {family_label}"],
-            title=rf"{family_label}: measure vs lookback (HiPPO vs LagOp)",
-            paper_ready=PAPER_READY_PLOTS,
-            **plot_io(check, "measure_vs_lookback_overlay.png"),
+    # Rewrite measure_density.png: left = HiPPO vs LagOp on absolute s;
+    # right = LagOp pushforward on z (unchanged diagnostic).
+    s_grid = np.arange(0.0, t_ref, DT, dtype=np.float64)
+    hippo_on_s = lookback_measure_to_absolute_s(
+        hippo_lookback, hippo_measure, t_ref, s_grid
+    )
+    if title_measure is None:
+        title_measure = (
+            rf"{family_label}: $\omega_t(s)$ on $s$ (HiPPO vs LagOp) "
+            rf"+ pushforward on $z$"
         )
+    plot_measure_density_warp(
+        sigma_fn=lag_model.sigma_func,
+        sigma_deriv_fn=lag_model.sigma_deriv_func,
+        sigma_inv_fn=lag_model.sigma_inv_func,
+        sigma_inv_deriv_fn=lag_model.sigma_inv_deriv_func,
+        t_ref=t_ref,
+        dt=DT,
+        title=title_measure,
+        paper_ready=PAPER_READY_PLOTS,
+        lag_label=rf"LagOp {family_label}",
+        compare_on_s=[(rf"HiPPO {family_label}", hippo_on_s)],
+        verbose=False,
+        **plot_io(check, "measure_density.png"),
+    )
 
 
 def plot_sigma_warp_diagnostics(
@@ -279,8 +312,14 @@ def plot_sigma_warp_diagnostics(
     title_measure: str,
     warp_family: str,
     t_ref: float = 10.0,
+    plot_measure_density: bool = True,
 ):
-    """Shared sigma-warp visuals: warp map, measure densities, and roundtrip."""
+    """Shared sigma-warp visuals: warp map, roundtrip, and optional measure density.
+
+    Set ``plot_measure_density=False`` when a later HiPPO comparison will
+    rewrite ``measure_density.png`` (avoids a LagOp-only intermediate figure
+    in Jupyter while still overwriting the same path on disk).
+    """
     vals = np.arange(0.0, t_ref, DT)
     sigma_on_s = sigma_fn(t_ref, vals)
     sigma_deriv_on_s = sigma_deriv_fn(t_ref, vals)
@@ -314,18 +353,20 @@ def plot_sigma_warp_diagnostics(
         **plot_io(check, "sigma_roundtrip_error.png"),
     )
 
-    measure_stats = plot_measure_density_warp(
-        sigma_fn=sigma_fn,
-        sigma_deriv_fn=sigma_deriv_fn,
-        sigma_inv_fn=sigma_inv_fn,
-        sigma_inv_deriv_fn=sigma_inv_deriv_fn,
-        t_ref=t_ref,
-        dt=DT,
-        title=title_measure,
-        paper_ready=PAPER_READY_PLOTS,
-        **plot_io(check, "measure_density.png"),
-        verbose=True,
-    )
+    measure_stats = {}
+    if plot_measure_density:
+        measure_stats = plot_measure_density_warp(
+            sigma_fn=sigma_fn,
+            sigma_deriv_fn=sigma_deriv_fn,
+            sigma_inv_fn=sigma_inv_fn,
+            sigma_inv_deriv_fn=sigma_inv_deriv_fn,
+            t_ref=t_ref,
+            dt=DT,
+            title=title_measure,
+            paper_ready=PAPER_READY_PLOTS,
+            **plot_io(check, "measure_density.png"),
+            verbose=True,
+        )
 
     maybe_save_metrics(
         check,
@@ -335,9 +376,128 @@ def plot_sigma_warp_diagnostics(
             "t_ref": t_ref,
             "max_roundtrip_abs_error": float(np.max(roundtrip_err)),
             "mean_roundtrip_abs_error": float(np.mean(roundtrip_err)),
+            "measure_density_plotted_here": plot_measure_density,
             **measure_stats,
         },
     )
+
+
+def _cosine_test_signal(T: float, dt: float) -> tuple[np.ndarray, np.ndarray]:
+    """Shared test input for Check 03/04: cos so u≈1 near the present."""
+    vals = np.arange(0.0, T, dt)
+    u = np.cos(2.0 * np.pi * 3.0 * vals)
+    return vals, u
+
+
+def _project_via_eval_matrix(eval_matrix, u_absolute: np.ndarray) -> np.ndarray:
+    """Least-squares projection of absolute-time signal onto eval_matrix columns.
+
+    ``eval_matrix`` rows are ordered by lookback τ (present at row 0).  Absolute
+    signal ``u_absolute`` is ordered by s (present at the end), so we flip to
+    lookback order, solve
+
+        min_c || Eval c - u_lookback ||_2 ,
+
+    and return coefficients ``c`` (length N). Reconstruction is then
+    ``reconstruct(c)`` / ``Eval @ c`` (then flip), not a recurrence.
+    """
+    E = np.asarray(eval_matrix, dtype=np.float64)
+    u_lb = np.flip(np.asarray(u_absolute, dtype=np.float64)).copy()
+    if E.shape[0] != u_lb.shape[0]:
+        raise ValueError(
+            f"eval_matrix rows {E.shape[0]} != signal length {u_lb.shape[0]}"
+        )
+    c, _, _, _ = np.linalg.lstsq(E, u_lb, rcond=None)
+    return c
+
+
+def run_projection_roundtrip_validation(
+    *,
+    check: str,
+    lag_model: LagHiPPO,
+    hippo_method: str,
+    basis,
+    N: int,
+    dt: float,
+    T: float,
+):
+    """Sanity check: Eval-matrix projection roundtrip (no recurrence).
+
+    Math:
+      u_lookback = flip(u)
+      c = argmin ||Eval c - u_lookback||   (least squares)
+      û = reconstruct(c) = flip(Eval c)
+
+    Same plot/metrics style as :func:`run_translated_ssm_validation`, but
+    ``c`` is obtained by static projection onto the eval basis rather than by
+    scanning ``u`` with ``c ← dA c + dB u``.
+    """
+    hippo = HiPPO(method=hippo_method, N=N, dt=dt, T=T)
+    vals, u = _cosine_test_signal(T, dt)
+
+    c_hippo = _project_via_eval_matrix(hippo.eval_matrix, u)
+    c_lag = _project_via_eval_matrix(lag_model.eval_matrix, u)
+
+    dtype_h = hippo.eval_matrix.dtype
+    dtype_l = lag_model.eval_matrix.dtype
+    recon_hippo = hippo.reconstruct(torch.as_tensor(c_hippo, dtype=dtype_h)).numpy()
+    recon_lag = lag_model.reconstruct(torch.as_tensor(c_lag, dtype=dtype_l)).numpy()
+
+    # Also report continuous LagOp projection on Z (Gauss), for cross-check.
+    proj = run_projection_reconstruction(
+        u_func=build_interpolated_signal(vals, u),
+        s_vals=vals,
+        phi_func=basis.phi,
+        sigma_func=basis.sigma,
+        sigma_inv_func=basis.sigma_inv,
+        N=N,
+        t=T,
+        verbose=False,
+    )
+    inner = orthonormality_matrix_gauss(
+        N=min(N, 8),
+        phi_func=basis.phi,
+        Z=(0.0, 1.0),
+        quad_order=2000,
+    )
+    ortho = orthonormality_summary(inner, tolerance=1e-3)
+
+    metrics = {
+        "mode": "eval_matrix_projection_roundtrip",
+        "hippo_method": hippo_method,
+        "N": N,
+        "dt": dt,
+        "T": T,
+        "mse_hippo_vs_input": float(np.mean((recon_hippo - u) ** 2)),
+        "mse_lag_vs_input": float(np.mean((recon_lag - u) ** 2)),
+        "mse_hippo_vs_lag": float(np.mean((recon_hippo - recon_lag) ** 2)),
+        "rel_error_hippo_vs_lag": float(
+            np.linalg.norm(recon_hippo - recon_lag)
+            / max(np.linalg.norm(recon_hippo), 1e-12)
+        ),
+        "gauss_projection_recon_mse": proj.mse,
+        "orthogonality_max_offdiag": ortho["max_offdiag"],
+        "orthogonality_max_diag_deviation": ortho["max_diag_deviation"],
+    }
+    print(f"{check} projection roundtrip ({hippo_method})")
+    for key, value in metrics.items():
+        print(f"  {key}: {value}")
+
+    plot_reconstructed_signal(
+        vals,
+        u,
+        [recon_hippo, recon_lag],
+        data_name="",
+        domain_name="s",
+        title=rf"Eval-matrix projection roundtrip ({hippo_method})",
+        paper_ready=PAPER_READY_PLOTS,
+        recon_labels_list=["HiPPO reference", "LagOp"],
+        recon_linestyle_list=["--", "-."],
+        function_name="u",
+        legend_loc="upper left",
+        **plot_io(check, "reconstruction_vs_hippo.png"),
+    )
+    maybe_save_metrics(check, "metrics.json", metrics)
 
 
 def run_translated_ssm_validation(
@@ -350,10 +510,12 @@ def run_translated_ssm_validation(
     dt: float,
     T: float,
 ):
-    """Compare LagOp SSM (LegS / LegT / FouT) against original HiPPO reference."""
+    """Compare LagOp SSM recurrence vs original HiPPO (LegS / LegT / FouT).
+
+    Scans u with c ← dA c + dB u up to c_T, then reconstructs history from c_T.
+    """
     hippo = HiPPO(method=hippo_method, N=N, dt=dt, T=T)
-    vals = np.arange(0.0, T, dt)
-    u = np.sin(2.0 * np.pi * 3.0 * vals)
+    vals, u = _cosine_test_signal(T, dt)
     u_torch = torch.tensor(u, dtype=torch.float)
 
     c_hippo = hippo(u_torch)
@@ -380,6 +542,7 @@ def run_translated_ssm_validation(
     ortho = orthonormality_summary(inner, tolerance=1e-3)
 
     metrics = {
+        "mode": "recurrent_scan_to_c_T",
         "hippo_method": hippo_method,
         "N": N,
         "dt": dt,
@@ -392,11 +555,13 @@ def run_translated_ssm_validation(
         "recurrent_recon_rel_error_vs_hippo": float(
             np.linalg.norm(recon_hippo - recon_lag) / np.linalg.norm(recon_hippo)
         ),
-        "projection_recon_mse": proj.mse,
+        "mse_hippo_vs_input": float(np.mean((recon_hippo - u) ** 2)),
+        "mse_lag_vs_input": float(np.mean((recon_lag - u) ** 2)),
+        "gauss_projection_recon_mse": proj.mse,
         "orthogonality_max_offdiag": ortho["max_offdiag"],
         "orthogonality_max_diag_deviation": ortho["max_diag_deviation"],
     }
-    print(f"{check} validation ({hippo_method})")
+    print(f"{check} recurrence validation ({hippo_method})")
     for key, value in metrics.items():
         print(f"  {key}: {value}")
 
@@ -406,10 +571,11 @@ def run_translated_ssm_validation(
         [recon_hippo, recon_lag],
         data_name="",
         domain_name="s",
-        title=f"LagOp vs HiPPO ({hippo_method})",
+        title=f"Recurrence scan → reconstruct ({hippo_method})",
         paper_ready=PAPER_READY_PLOTS,
         recon_labels_list=["HiPPO reference", "LagOp"],
-        recon_linestyle_list=["-", "-."],
+        # GT is solid black; keep HiPPO dashed so it does not hide the input.
+        recon_linestyle_list=["--", "-."],
         function_name="u",
         legend_loc="upper left",
         **plot_io(check, "reconstruction_vs_hippo.png"),
@@ -449,11 +615,19 @@ def run_domain_expansion_visualization(
 
     Backward lag from ``A_∞`` is also shown for geometry (compress toward
     older history).
+
+    ``example_n`` is the coefficient / basis index of the one-hot mode (shown
+    in the figure title as n=...). Default is N-2.
     """
     prefix = file_prefix or family_label.lower().replace(" ", "_")
+    # Coefficient index of the one-hot mode used for the lag visualization.
+    # Default N-2 matches demo.py (high-order mode; for FouT avoids the null sin(0) slot at n=1).
     if example_n is None:
-        example_n = N - 1
-    mode_idx = max(example_n - 1, 0)  # demo.py one-hot index convention
+        mode_idx = max(N - 2, 0)
+    else:
+        mode_idx = int(example_n)
+    if not (0 <= mode_idx < N):
+        raise ValueError(f"basis index mode_idx={mode_idx} out of range for N={N}")
 
     # LagOp models: eval_matrix / reconstruct only (lag maps from A_∞ below).
     # Avoid derive_A_from="infty" here: FouT's null sin(0) mode makes A_∞ singular.
@@ -560,9 +734,13 @@ def run_domain_expansion_visualization(
             gt_hippo[sl],
         ],
         data_name="",  # avoid redundant "… Basis" suffix on every legend entry
-        function_name=rf"$\phi_{{{example_n}}}$",
+        function_name=rf"$\phi_{{{mode_idx}}}$",
         domain_name="s",
-        title=rf"{family_label}: domain expansion (GT + HiPPO $dA$ vs LagOp $A_\infty$)",
+        title=(
+            rf"{family_label}: domain expansion"
+            rf" (basis $n={mode_idx}$, $N={N}$;"
+            rf" GT + HiPPO $dA$ vs LagOp $A_\infty$)"
+        ),
         paper_ready=PAPER_READY_PLOTS,
         recon_labels_list=[
             r"HiPPO $dA$ forward",
@@ -601,8 +779,8 @@ def run_domain_expansion_visualization(
         "N": N,
         "dt": dt,
         "T": T,
-        "example_n": example_n,
-        "mode_index": mode_idx,
+        "basis_index": mode_idx,
+        "N_basis": N,
         "a_tilt": a_tilt,
         "mode": mode,
         "zoom": zoom_n,
@@ -670,6 +848,8 @@ plot_sigma_warp_diagnostics(
         r"uniform on $z$"
     ),
     warp_family="lagop-legs",
+    # measure_density.png written later with HiPPO vs LagOp overlay
+    plot_measure_density=False,
 )
 hippo_legs = HiPPO(method="legs", N=N_LEGS, dt=DT, T=T_LONG)
 lag_legs = LagHiPPO(
@@ -720,6 +900,7 @@ plot_sigma_warp_diagnostics(
     ),
     warp_family="lagop-legt",
     t_ref=T_REF,
+    plot_measure_density=False,  # HiPPO vs LagOp version written below
 )
 hippo_legt = HiPPO(method="legt", N=N_LEGT, dt=DT, T=WINDOW_L)
 lag_legt = make_legt_model(N=N_LEGT, dt=DT, T=WINDOW_L, window_length=WINDOW_L)
@@ -760,6 +941,7 @@ plot_sigma_warp_diagnostics(
     ),
     warp_family="lagop-fout",
     t_ref=T_REF,
+    plot_measure_density=False,  # HiPPO vs LagOp version written below
 )
 hippo_fout = HiPPO(method="fourier", N=N_FOUT, dt=DT, T=WINDOW_L)
 lag_fout = make_fout_model(N=N_FOUT, dt=DT, T=WINDOW_L, window_length=WINDOW_L)
@@ -843,32 +1025,47 @@ class _LegSBasisAdapter:
 
 
 legs_basis = _LegSBasisAdapter()
+# Check 03 reconstruction horizon T_RECON (default 5); window length still WINDOW_L.
 run_translated_ssm_validation(
     check="03_legs_vs_hippo",
-    lag_model=lag_legs,
+    lag_model=LagHiPPO(
+        N=N_LEGS,
+        phi_func=phi,
+        phi_deriv_func=phi_deriv,
+        sigma_func=sigma,
+        sigma_deriv_func=sigma_deriv,
+        sigma_inv_func=sigma_inv,
+        sigma_inv_deriv_func=sigma_inv_deriv,
+        dt=DT,
+        T=T_RECON,
+    ),
     hippo_method="legs",
     basis=legs_basis,
     N=N_LEGS,
     dt=DT,
-    T=T_LONG,
+    T=T_RECON,
 )
 run_translated_ssm_validation(
     check="03_legt_vs_hippo",
-    lag_model=lag_legt,
+    lag_model=make_legt_model(
+        N=N_LEGT, dt=DT, T=T_RECON, window_length=WINDOW_L
+    ),
     hippo_method="legt",
     basis=legt_basis,
     N=N_LEGT,
     dt=DT,
-    T=WINDOW_L,
+    T=T_RECON,
 )
 run_translated_ssm_validation(
     check="03_fout_vs_hippo",
-    lag_model=lag_fout,
+    lag_model=make_fout_model(
+        N=N_FOUT, dt=DT, T=T_RECON, window_length=WINDOW_L
+    ),
     hippo_method="fourier",
     basis=fout_basis,
     N=N_FOUT,
     dt=DT,
-    T=WINDOW_L,
+    T=T_RECON,
 )
 
 # %%

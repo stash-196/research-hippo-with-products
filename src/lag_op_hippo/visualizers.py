@@ -217,9 +217,7 @@ def plot_reconstructed_signal(
         legend_bbox_to_anchor = None
 
     leg_fs = (
-        legend_fontsize
-        if legend_fontsize is not None
-        else config["legend_fontsize"]
+        legend_fontsize if legend_fontsize is not None else config["legend_fontsize"]
     )
     # Slightly smaller than axis labels so multi-column legends fit cleanly.
     if leg_fs is None:
@@ -506,7 +504,9 @@ def plot_measure_vs_lookback(
     if paper_ready and title:
         plt.title(title, fontsize=config["axis_label_fontsize"])
     elif not paper_ready:
-        plt.title(title or "Measure vs lookback", fontsize=config["axis_label_fontsize"])
+        plt.title(
+            title or "Measure vs lookback", fontsize=config["axis_label_fontsize"]
+        )
     if xlim is not None:
         plt.xlim(xlim)
     if ylim is not None:
@@ -520,7 +520,7 @@ def plot_eval_matrix_columns(
     lookback,
     eval_matrix,
     title="",
-    domain_name=r"\tau",
+    domain_name="s",
     basis_type="eval",
     num_functions_front=None,
     num_functions_back=None,
@@ -529,32 +529,153 @@ def plot_eval_matrix_columns(
     save_path=None,
     show=True,
     save=True,
+    z_vals=None,
+    title_s=None,
+    title_tau=None,  # alias kept for older call sites
+    title_z=None,
+    t_end=None,
 ):
-    """Plot columns of an evaluation / basis matrix vs lookback.
+    """Plot eval-matrix columns vs absolute time $s$, optionally also vs $z$.
 
-    Thin wrapper around :func:`plot_basis_functions` that accepts a
-    ``(L, N)`` eval matrix (as stored on ``HiPPO`` / ``LagHiPPO``).
+    Rows of ``eval_matrix`` are indexed by lookback $\\tau$ (present at $\\tau=0$).
+    The left panel uses absolute time $s = t_{\\mathrm{end}}-\\tau$ so the present
+    sits on the right. When ``z_vals`` is given, the right panel plots the same
+    columns vs $z=\\sigma(0,-\\tau)$.
     """
+    # Accept either title_s or legacy title_tau
+    if title_s is None and title_tau is not None:
+        title_s = title_tau
+
     eval_matrix = np.asarray(eval_matrix, dtype=np.float64)
+    lookback = np.asarray(lookback, dtype=np.float64)
     if eval_matrix.ndim != 2:
-        raise ValueError(f"eval_matrix must be 2D (L, N); got shape {eval_matrix.shape}")
+        raise ValueError(
+            f"eval_matrix must be 2D (L, N); got shape {eval_matrix.shape}"
+        )
     n_basis = eval_matrix.shape[1]
-    return plot_basis_functions(
-        x=lookback,
-        Bases=eval_matrix,
-        ks=range(n_basis),
-        data_name="eval",
-        domain_name=domain_name,
-        basis_type=basis_type,
-        num_functions_front=num_functions_front,
-        num_functions_back=num_functions_back,
-        title=title,
-        paper_ready=paper_ready,
-        legend_loc=legend_loc,
-        save_path=save_path,
-        show=show,
-        save=save,
+    n_times = eval_matrix.shape[0]
+    if lookback.shape[0] != n_times:
+        raise ValueError(
+            f"lookback length {lookback.shape[0]} != eval_matrix rows {n_times}"
+        )
+
+    # Absolute time: s = t_end - τ  (present τ=0 → s=t_end on the right).
+    if t_end is None:
+        if n_times >= 2:
+            dt = float(lookback[1] - lookback[0])
+        else:
+            dt = 0.0
+        t_end = float(lookback[-1] + dt) if n_times else 0.0
+    s_vals = np.asarray(t_end, dtype=np.float64) - lookback
+
+    if num_functions_front is None and num_functions_back is None:
+        selected = np.arange(n_basis)
+    elif num_functions_front is None:
+        selected = np.arange(n_basis - num_functions_back, n_basis)
+    elif num_functions_back is None:
+        selected = np.arange(min(num_functions_front, n_basis))
+    else:
+        selected = np.unique(
+            np.concatenate(
+                (
+                    np.arange(min(num_functions_front, n_basis)),
+                    np.arange(max(n_basis - num_functions_back, 0), n_basis),
+                )
+            )
+        )
+
+    if z_vals is None:
+        return plot_basis_functions(
+            x=s_vals,
+            Bases=eval_matrix,
+            ks=range(n_basis),
+            data_name="eval",
+            domain_name=domain_name,
+            basis_type=basis_type,
+            num_functions_front=num_functions_front,
+            num_functions_back=num_functions_back,
+            title=title,
+            paper_ready=paper_ready,
+            legend_loc=legend_loc,
+            save_path=save_path,
+            show=show,
+            save=save,
+        )
+
+    z_vals = np.asarray(z_vals, dtype=np.float64)
+    if z_vals.shape[0] != n_times:
+        raise ValueError(
+            f"z_vals length {z_vals.shape[0]} != eval_matrix rows {n_times}"
+        )
+
+    config = get_plot_config(paper_ready)
+    title_fs = config["axis_label_fontsize"]
+    if title_fs is not None and title_fs > 14:
+        title_fs = max(12, title_fs - 6)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5.2))
+    left_title = title_s or title or r"Eval basis vs $s$"
+    right_title = title_z or r"Eval basis vs $z=\sigma(0,-(t-s))$"
+    if title and not title_s:
+        left_title = title + r" (vs $s$)"
+    if title and not title_z:
+        right_title = title + r" (vs $z$)"
+
+    for i in selected:
+        lab = rf"$\phi_{{{i}}}$"
+        axes[0].plot(
+            s_vals,
+            eval_matrix[:, i],
+            label=lab,
+            linewidth=config["line_width"],
+        )
+        axes[1].plot(
+            z_vals,
+            eval_matrix[:, i],
+            label=lab,
+            linewidth=config["line_width"],
+        )
+
+    axes[0].set_xlabel(
+        rf"$s$ (present at $t={t_end:g}$)",
+        fontsize=config["axis_label_fontsize"],
     )
+    axes[0].set_ylabel("basis value", fontsize=config["axis_label_fontsize"])
+    axes[0].set_title(left_title, fontsize=title_fs, pad=8)
+    axes[0].tick_params(labelsize=config["tick_label_fontsize"])
+    axes[0].grid(True, linestyle="--", alpha=0.6)
+    axes[0].legend(fontsize=config["legend_fontsize"], loc=legend_loc, ncol=1)
+
+    axes[1].set_xlabel(
+        r"$z=\sigma(0,-(t-s))$",
+        fontsize=config["axis_label_fontsize"],
+    )
+    axes[1].set_ylabel("basis value", fontsize=config["axis_label_fontsize"])
+    axes[1].set_title(right_title, fontsize=title_fs, pad=8)
+    axes[1].tick_params(labelsize=config["tick_label_fontsize"])
+    axes[1].grid(True, linestyle="--", alpha=0.6)
+    axes[1].legend(fontsize=config["legend_fontsize"], loc=legend_loc, ncol=1)
+
+    fig.tight_layout(w_pad=2.0)
+    _finalize_figure(save_path=save_path, show=show, save=save, tight=False)
+
+
+def lookback_measure_to_absolute_s(lookback, measure, t_ref, s_vals):
+    """Map a lookback-domain measure ``ω(τ)`` to absolute time ``s`` via ``τ=t-s``.
+
+    Values with lookback outside the provided grid are set to 0 (correct for
+    truncated windows; for LegS the grid usually covers the full horizon).
+    """
+    lookback = np.asarray(lookback, dtype=np.float64)
+    measure = np.asarray(measure, dtype=np.float64)
+    s_vals = np.asarray(s_vals, dtype=np.float64)
+    tau = np.asarray(t_ref, dtype=np.float64) - s_vals
+    out = np.zeros_like(s_vals, dtype=np.float64)
+    lo, hi = float(lookback[0]), float(lookback[-1])
+    mask = (tau >= lo - 1e-15) & (tau <= hi + 1e-15)
+    if np.any(mask):
+        out[mask] = np.interp(tau[mask], lookback, measure)
+    return out
 
 
 def plot_measure_density_warp(
@@ -572,6 +693,8 @@ def plot_measure_density_warp(
     show=True,
     save=True,
     verbose=False,
+    lag_label=r"LagOp $\omega_t(s)=\sigma_t'(s)$",
+    compare_on_s=None,
 ):
     """Plot measure density on $s$ and its pushforward on $z$.
 
@@ -582,6 +705,16 @@ def plot_measure_density_warp(
     pushed-forward density
     $\\omega_z(z)=\\sigma_t'(s(z))\\,|ds/dz|$
     must be exactly uniform ($=1$) for any valid warp.
+
+    Parameters
+    ----------
+    compare_on_s :
+        Optional list of ``(label, omega_values)`` arrays aligned to the same
+        absolute-time grid as LagOp's ``measure_s`` (length ``len(s_vals)``).
+        Typically used to overlay HiPPO's measure after mapping lookback
+        ``τ=t-s`` onto absolute ``s`` — absorbs a separate lookback overlay.
+    lag_label :
+        Legend label for the LagOp curve on the left panel.
     """
     from lag_op_hippo.freq_diagnostics import compute_warp_measure_densities
 
@@ -598,22 +731,51 @@ def plot_measure_density_warp(
     config = get_plot_config(paper_ready)
     uniform_ref = np.ones_like(result.z_vals)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5.0))
 
-    axes[0].plot(
-        result.s_vals,
-        result.measure_s,
-        label=r"$\omega_t(s)=\sigma_t'(s)$",
-        linewidth=config["line_width"],
-        color="black",
-    )
+    # Left: time-domain measure (LagOp ± optional HiPPO comparison)
+    if compare_on_s:
+        palette = [("black", "-"), ("tab:blue", "--"), ("tab:green", ":")]
+        for i, (lab, vals) in enumerate(compare_on_s):
+            vals = np.asarray(vals, dtype=np.float64)
+            if vals.shape != result.measure_s.shape:
+                raise ValueError(
+                    f"compare_on_s[{i}] length {vals.shape} != "
+                    f"LagOp grid {result.measure_s.shape}"
+                )
+            color, ls = palette[i % len(palette)]
+            axes[0].plot(
+                result.s_vals,
+                vals,
+                label=lab,
+                linewidth=config["line_width"],
+                color=color,
+                linestyle=ls,
+            )
+        axes[0].plot(
+            result.s_vals,
+            result.measure_s,
+            label=lag_label,
+            linewidth=config["line_width"],
+            color="tab:red",
+            linestyle="-.",
+        )
+        left_title = r"Measure on $s$ (HiPPO vs LagOp)"
+    else:
+        axes[0].plot(
+            result.s_vals,
+            result.measure_s,
+            label=lag_label,
+            linewidth=config["line_width"],
+            color="black",
+            linestyle="-",
+        )
+        left_title = r"Measure on $s$"
+
     axes[0].set_xlim(float(result.s_vals[0]), float(result.s_vals[-1]))
     axes[0].set_xlabel(r"$s$", fontsize=config["axis_label_fontsize"])
     axes[0].set_ylabel(r"$\omega_t(s)$", fontsize=config["axis_label_fontsize"])
-    axes[0].set_title(
-        r"Measure on $s$",
-        fontsize=config["axis_label_fontsize"],
-    )
+    axes[0].set_title(left_title, fontsize=config["axis_label_fontsize"])
     axes[0].tick_params(labelsize=config["tick_label_fontsize"])
     axes[0].grid(True, linestyle="--", alpha=0.6)
     axes[0].legend(fontsize=config["legend_fontsize"], loc=legend_loc)
@@ -637,19 +799,29 @@ def plot_measure_density_warp(
         axes[1].set_xlim(float(np.min(result.z_vals)), float(np.max(result.z_vals)))
     axes[1].set_xlabel(r"$z=\sigma_t(s)$", fontsize=config["axis_label_fontsize"])
     axes[1].set_ylabel(r"$\omega_z(z)$", fontsize=config["axis_label_fontsize"])
+    # Multi-line title: definition of pushforward density (not just ω(σ^{-1}(z))).
+    title_fs = config["axis_label_fontsize"]
+    if title_fs is not None and title_fs > 14:
+        title_fs = max(11, title_fs - 8)
     axes[1].set_title(
-        r"Pushed-forward measure on $z$ (should be uniform)",
-        fontsize=config["axis_label_fontsize"],
+        r"Pushforward $\omega_z(z)=\omega_t(\sigma_t^{-1}(z))\,|ds/dz|$"
+        "\n"
+        r"(should be uniform $=1$)",
+        fontsize=title_fs,
+        pad=8,
     )
     axes[1].set_ylim(z_ylim)
     axes[1].tick_params(labelsize=config["tick_label_fontsize"])
     axes[1].grid(True, linestyle="--", alpha=0.6)
     axes[1].legend(fontsize=config["legend_fontsize"], loc=legend_loc)
 
+    # Modest top room for 2-line right-panel title (+ optional suptitle).
     if title:
-        fig.suptitle(title, fontsize=config["axis_label_fontsize"], y=1.02)
-
-    _finalize_figure(save_path=save_path, show=show, save=save)
+        fig.suptitle(title, fontsize=config["axis_label_fontsize"], y=0.98)
+        fig.tight_layout(rect=(0, 0, 1, 0.92), w_pad=2.0)
+    else:
+        fig.tight_layout(rect=(0, 0, 1, 0.96), w_pad=2.0)
+    _finalize_figure(save_path=save_path, show=show, save=save, tight=False)
     return {
         "max_pushforward_deviation_from_1": result.max_pushforward_deviation_from_1,
         "mean_pushforward_deviation_from_1": result.mean_pushforward_deviation_from_1,
