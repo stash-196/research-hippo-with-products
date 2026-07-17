@@ -237,6 +237,11 @@ class LagHiPPO(nn.Module):
         self.mode = mode
         self.window = window
         self.quad_order = quad_order
+        # Provenance of discrete (dA, dB) for plots / diagnostics.
+        self.derive_A_from = derive_A_from
+        self.input_hold = input_hold
+        self.a_tilt = a_tilt
+        self.discretization = discretization
 
         # Compute lag-based transition matrices
         # Use A_gen and B_delta + discretization as default (this is analytically equivalent to HiPPO-LegS)

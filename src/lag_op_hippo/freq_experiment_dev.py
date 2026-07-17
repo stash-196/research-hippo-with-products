@@ -77,7 +77,7 @@ WINDOW_L = 1.0
 DT = 0.001
 T_LONG = 10.0
 T_REF = T_LONG  # reference time t for warp/measure diagnostic plots
-T_RECON = 5.0  # horizon for Check 03 reconstruction (u and û on s∈[0,T_RECON])
+T_RECON = 3.0  # horizon for Check 03/04 reconstruction (u and û on s∈[0,T_RECON])
 T_DOMAIN = 3.0  # horizon for domain-expansion (paper Fig. 3 style)
 DOMAIN_ZOOM = 20  # samples near the present for lag-shift zoom
 PAPER_READY_PLOTS = True
@@ -411,6 +411,27 @@ def _project_via_eval_matrix(eval_matrix, u_absolute: np.ndarray) -> np.ndarray:
     return c
 
 
+# Legend / metrics names for Check 03–04 reconstruction plots.
+_HIPPO_METHOD_LEGEND = {
+    "legs": "HiPPO-LegS",
+    "legt": "HiPPO-LegT",
+    "fourier": "HiPPO-FouT",
+}
+_LAG_METHOD_LEGEND = {
+    "legs": "LagOp-LegS",
+    "legt": "LagOp-LegT",
+    "fourier": "LagOp-FouT",
+}
+
+
+def _hippo_legend_label(hippo_method: str) -> str:
+    return _HIPPO_METHOD_LEGEND.get(hippo_method, f"HiPPO-{hippo_method}")
+
+
+def _lag_legend_label(hippo_method: str) -> str:
+    return _LAG_METHOD_LEGEND.get(hippo_method, f"LagOp-{hippo_method}")
+
+
 def run_projection_roundtrip_validation(
     *,
     check: str,
@@ -420,6 +441,9 @@ def run_projection_roundtrip_validation(
     N: int,
     dt: float,
     T: float,
+    lag_label: str | None = None,
+    hippo_label: str | None = None,
+    title_family: str | None = None,
 ):
     """Sanity check: Eval-matrix projection roundtrip (no recurrence).
 
@@ -431,9 +455,18 @@ def run_projection_roundtrip_validation(
     Same plot/metrics style as :func:`run_translated_ssm_validation`, but
     ``c`` is obtained by static projection onto the eval basis rather than by
     scanning ``u`` with ``c ← dA c + dB u``.
+
+    For families without a Gu HiPPO twin (e.g. freq-preserving), pass
+    ``hippo_method='legs'`` and set ``title_family`` / labels so the comparison
+    is clearly LagOp-FreqPres vs HiPPO-LegS.
     """
     hippo = HiPPO(method=hippo_method, N=N, dt=dt, T=T)
     vals, u = _cosine_test_signal(T, dt)
+    family = title_family if title_family is not None else hippo_method
+    if hippo_label is None:
+        hippo_label = _hippo_legend_label(hippo_method)
+    if lag_label is None:
+        lag_label = _lag_legend_label(hippo_method)
 
     c_hippo = _project_via_eval_matrix(hippo.eval_matrix, u)
     c_lag = _project_via_eval_matrix(lag_model.eval_matrix, u)
@@ -465,6 +498,9 @@ def run_projection_roundtrip_validation(
     metrics = {
         "mode": "eval_matrix_projection_roundtrip",
         "hippo_method": hippo_method,
+        "lag_family": family,
+        "lag_label": lag_label,
+        "hippo_label": hippo_label,
         "N": N,
         "dt": dt,
         "T": T,
@@ -479,7 +515,7 @@ def run_projection_roundtrip_validation(
         "orthogonality_max_offdiag": ortho["max_offdiag"],
         "orthogonality_max_diag_deviation": ortho["max_diag_deviation"],
     }
-    print(f"{check} projection roundtrip ({hippo_method})")
+    print(f"{check} projection roundtrip ({family})")
     for key, value in metrics.items():
         print(f"  {key}: {value}")
 
@@ -489,15 +525,46 @@ def run_projection_roundtrip_validation(
         [recon_hippo, recon_lag],
         data_name="",
         domain_name="s",
-        title=rf"Eval-matrix projection roundtrip ({hippo_method})",
+        # Discrete samples of ψ on the lookback grid (s-domain), not ∫ φ U dz on Z.
+        title=(
+            rf"Projection roundtrip on $s$ via $\psi$ ({family}, $N={N}$)"
+            "\n"
+            r"$\hat{u}=\sum_{n=0}^{N-1}\langle\psi_n,\,u\rangle_{\omega_t}\,\psi_n$"
+        ),
         paper_ready=PAPER_READY_PLOTS,
-        recon_labels_list=["HiPPO reference", "LagOp"],
+        figsize=(11.0, 6.8),
+        recon_labels_list=[hippo_label, lag_label],
         recon_linestyle_list=["--", "-."],
         function_name="u",
         legend_loc="upper left",
         **plot_io(check, "reconstruction_vs_hippo.png"),
     )
     maybe_save_metrics(check, "metrics.json", metrics)
+
+
+def _lag_recurrence_ab_mathtex(lag_model: LagHiPPO) -> tuple[str, str]:
+    """Mathtext symbols for the discrete maps actually used by ``lag_model``.
+
+    - ``derive_A_from='gen'`` → ``dA_gen`` (cont2discrete of tilted ``A_gen``)
+    - ``derive_A_from='infty'`` → ``A_∞`` (lag-op end-to-end discrete map)
+    - ``input_hold='delta'`` → ``dB_δ`` (cont2discrete of ``B_delta``)
+    - ``input_hold='zoh'`` → ``B_zoh``
+    """
+    derive = getattr(lag_model, "derive_A_from", "gen")
+    hold = getattr(lag_model, "input_hold", "delta")
+    if derive == "infty":
+        dA_tex = r"A_{\infty}"
+    elif derive == "gen":
+        dA_tex = r"\mathrm{d}A_{\mathrm{gen}}"
+    else:
+        dA_tex = rf"\mathrm{{d}}A_{{\mathrm{{{derive}}}}}"
+    if hold == "zoh":
+        dB_tex = r"B_{\mathrm{zoh}}"
+    elif hold == "delta":
+        dB_tex = r"\mathrm{d}B_{\delta}"
+    else:
+        dB_tex = rf"\mathrm{{d}}B_{{\mathrm{{{hold}}}}}"
+    return dA_tex, dB_tex
 
 
 def run_translated_ssm_validation(
@@ -509,14 +576,26 @@ def run_translated_ssm_validation(
     N: int,
     dt: float,
     T: float,
+    lag_label: str | None = None,
+    hippo_label: str | None = None,
+    title_family: str | None = None,
 ):
     """Compare LagOp SSM recurrence vs original HiPPO (LegS / LegT / FouT).
 
     Scans u with c ← dA c + dB u up to c_T, then reconstructs history from c_T.
+
+    For freq-preserving LagOp (no Gu twin), compare against ``hippo_method='legs'``
+    and set ``title_family`` / series labels accordingly.
     """
     hippo = HiPPO(method=hippo_method, N=N, dt=dt, T=T)
     vals, u = _cosine_test_signal(T, dt)
     u_torch = torch.tensor(u, dtype=torch.float)
+    family = title_family if title_family is not None else hippo_method
+    if hippo_label is None:
+        hippo_label = _hippo_legend_label(hippo_method)
+    if lag_label is None:
+        lag_label = _lag_legend_label(hippo_method)
+    dA_tex, dB_tex = _lag_recurrence_ab_mathtex(lag_model)
 
     c_hippo = hippo(u_torch)
     c_lag = lag_model(u_torch)
@@ -544,6 +623,12 @@ def run_translated_ssm_validation(
     metrics = {
         "mode": "recurrent_scan_to_c_T",
         "hippo_method": hippo_method,
+        "lag_family": family,
+        "lag_label": lag_label,
+        "hippo_label": hippo_label,
+        "derive_A_from": getattr(lag_model, "derive_A_from", None),
+        "input_hold": getattr(lag_model, "input_hold", None),
+        "a_tilt": getattr(lag_model, "a_tilt", None),
         "N": N,
         "dt": dt,
         "T": T,
@@ -561,7 +646,7 @@ def run_translated_ssm_validation(
         "orthogonality_max_offdiag": ortho["max_offdiag"],
         "orthogonality_max_diag_deviation": ortho["max_diag_deviation"],
     }
-    print(f"{check} recurrence validation ({hippo_method})")
+    print(f"{check} recurrence validation ({family})")
     for key, value in metrics.items():
         print(f"  {key}: {value}")
 
@@ -571,9 +656,15 @@ def run_translated_ssm_validation(
         [recon_hippo, recon_lag],
         data_name="",
         domain_name="s",
-        title=f"Recurrence scan → reconstruct ({hippo_method})",
+        title=(
+            rf"Recurrence scan $\to c_T\to$ reconstruct ({family}, $N={N}$)"
+            "\n"
+            rf"$\hat{{u}}=\sum_{{n=0}}^{{N-1}}(c_T)_n\,\psi_n$ "
+            rf"($c_{{t+1}} = {dA_tex}\,c_t+{dB_tex}\,u_{{t+1}}$)"
+        ),
         paper_ready=PAPER_READY_PLOTS,
-        recon_labels_list=["HiPPO reference", "LagOp"],
+        figsize=(11.0, 7.2),
+        recon_labels_list=[hippo_label, lag_label],
         # GT is solid black; keep HiPPO dashed so it does not hide the input.
         recon_linestyle_list=["--", "-."],
         function_name="u",
@@ -1013,8 +1104,7 @@ run_domain_expansion_visualization(
 
 
 # %%
-# Check 03: LagOp vs original HiPPO (LegS / LegT / FouT)
-# SimpleNamespace-style LegS basis for projection diagnostics in the validator.
+# Shared basis adapter + models for Check 03 (projection) and Check 04 (recurrence).
 class _LegSBasisAdapter:
     phi = staticmethod(phi)
     phi_deriv = staticmethod(phi_deriv)
@@ -1025,20 +1115,91 @@ class _LegSBasisAdapter:
 
 
 legs_basis = _LegSBasisAdapter()
-# Check 03 reconstruction horizon T_RECON (default 5); window length still WINDOW_L.
+
+# Shared LagOp models for Check 03 (projection) and Check 04 (recurrence).
+lag_legs_recon = LagHiPPO(
+    N=N_LEGS,
+    phi_func=phi,
+    phi_deriv_func=phi_deriv,
+    sigma_func=sigma,
+    sigma_deriv_func=sigma_deriv,
+    sigma_inv_func=sigma_inv,
+    sigma_inv_deriv_func=sigma_inv_deriv,
+    dt=DT,
+    T=T_RECON,
+)
+lag_legt_recon = make_legt_model(N=N_LEGT, dt=DT, T=T_RECON, window_length=WINDOW_L)
+lag_fout_recon = make_fout_model(N=N_FOUT, dt=DT, T=T_RECON, window_length=WINDOW_L)
+# Freq-preserving has no Gu HiPPO twin: compare against HiPPO-LegS at the same N.
+# Use N_LEGS so capacity matches the LegS Check 03/04 runs.
+# derive_A_from='gen' (not A_∞): A_∞ + ZOH is unstable on this cosine scan and
+# yields NaN c_T; gen matches the stable LagHiPPO-LegS reconstruction path.
+freq_basis_recon = make_frequency_preserving_basis(
+    alpha=ALPHA,
+    window_length=L_FOURIER,
+    eps=EPS,
+)
+lag_freq_recon = make_frequency_preserving_model(
+    N=N_LEGS,
+    dt=DT,
+    T=T_RECON,
+    alpha=ALPHA,
+    window_length=L_FOURIER,
+    eps=EPS,
+    derive_A_from="gen",
+    input_hold="zoh",
+    quad_order=200 * N_LEGS,
+)
+
+# %%
+# Check 03: Eval-matrix projection roundtrip (no recurrence)
+#   c = lstsq(Eval, flip(u)),  û = reconstruct(c)
+# Isolates projection stability vs the recurrent scan in Check 04.
+run_projection_roundtrip_validation(
+    check="03_legs_proj_roundtrip",
+    lag_model=lag_legs_recon,
+    hippo_method="legs",
+    basis=legs_basis,
+    N=N_LEGS,
+    dt=DT,
+    T=T_RECON,
+)
+run_projection_roundtrip_validation(
+    check="03_legt_proj_roundtrip",
+    lag_model=lag_legt_recon,
+    hippo_method="legt",
+    basis=legt_basis,
+    N=N_LEGT,
+    dt=DT,
+    T=T_RECON,
+)
+run_projection_roundtrip_validation(
+    check="03_fout_proj_roundtrip",
+    lag_model=lag_fout_recon,
+    hippo_method="fourier",
+    basis=fout_basis,
+    N=N_FOUT,
+    dt=DT,
+    T=T_RECON,
+)
+run_projection_roundtrip_validation(
+    check="03_freq_proj_roundtrip",
+    lag_model=lag_freq_recon,
+    hippo_method="legs",  # no Gu freq-pres twin; baseline = HiPPO-LegS
+    basis=freq_basis_recon,
+    N=N_LEGS,
+    dt=DT,
+    T=T_RECON,
+    lag_label="LagOp-FreqPres",
+    hippo_label="HiPPO-LegS",
+    title_family="freq-pres vs legs",
+)
+
+# %%
+# Check 04: recurrence scan → c_T → reconstruct (was Check 03)
 run_translated_ssm_validation(
-    check="03_legs_vs_hippo",
-    lag_model=LagHiPPO(
-        N=N_LEGS,
-        phi_func=phi,
-        phi_deriv_func=phi_deriv,
-        sigma_func=sigma,
-        sigma_deriv_func=sigma_deriv,
-        sigma_inv_func=sigma_inv,
-        sigma_inv_deriv_func=sigma_inv_deriv,
-        dt=DT,
-        T=T_RECON,
-    ),
+    check="04_legs_vs_hippo",
+    lag_model=lag_legs_recon,
     hippo_method="legs",
     basis=legs_basis,
     N=N_LEGS,
@@ -1046,10 +1207,8 @@ run_translated_ssm_validation(
     T=T_RECON,
 )
 run_translated_ssm_validation(
-    check="03_legt_vs_hippo",
-    lag_model=make_legt_model(
-        N=N_LEGT, dt=DT, T=T_RECON, window_length=WINDOW_L
-    ),
+    check="04_legt_vs_hippo",
+    lag_model=lag_legt_recon,
     hippo_method="legt",
     basis=legt_basis,
     N=N_LEGT,
@@ -1057,20 +1216,30 @@ run_translated_ssm_validation(
     T=T_RECON,
 )
 run_translated_ssm_validation(
-    check="03_fout_vs_hippo",
-    lag_model=make_fout_model(
-        N=N_FOUT, dt=DT, T=T_RECON, window_length=WINDOW_L
-    ),
+    check="04_fout_vs_hippo",
+    lag_model=lag_fout_recon,
     hippo_method="fourier",
     basis=fout_basis,
     N=N_FOUT,
     dt=DT,
     T=T_RECON,
 )
+run_translated_ssm_validation(
+    check="04_freq_vs_hippo",
+    lag_model=lag_freq_recon,
+    hippo_method="legs",  # no Gu freq-pres twin; baseline = HiPPO-LegS
+    basis=freq_basis_recon,
+    N=N_LEGS,
+    dt=DT,
+    T=T_RECON,
+    lag_label="LagOp-FreqPres",
+    hippo_label="HiPPO-LegS",
+    title_family="freq-pres vs legs",
+)
 
 # %%
-# Check 04: recurrent reconstruction (freq-preserving vs standard)
-check = "04_recurrent_reconstruction"
+# Check 05: recurrent reconstruction (freq-preserving vs standard)
+check = "05_recurrent_reconstruction"
 vals = np.arange(0.0, T_LONG, DT)
 u = np.sin(2 * np.pi * 2 * vals)
 u_torch = torch.tensor(u, dtype=torch.float)
@@ -1201,8 +1370,8 @@ maybe_save_metrics(
 )
 
 # %%
-# Check 05: direct projection-reconstruction (non-recurrent)
-check = "05_projection_reconstruction"
+# Check 06: direct projection-reconstruction (non-recurrent)
+check = "06_projection_reconstruction"
 T = 1.0
 dt = 0.001
 proj_vals = np.arange(0.0, T, dt)
@@ -1261,8 +1430,8 @@ maybe_save_metrics(
 )
 
 # %%
-# Check 06: orthonormality via adaptive quadrature (per-window intervals)
-check = "06_orthonormality_quad"
+# Check 07: orthonormality via adaptive quadrature (per-window intervals)
+check = "07_orthonormality_quad"
 
 
 def test_orthonormality_quad(phi_func, N, Z=(0.0, 1.0), atol=1e-8):
@@ -1283,7 +1452,7 @@ def test_orthonormality_quad(phi_func, N, Z=(0.0, 1.0), atol=1e-8):
 
 N_FOURIER_TEST = 5
 quad_results = []
-print("Check 06: orthonormality (adaptive quadrature)")
+print("Check 07: orthonormality (adaptive quadrature)")
 for N in range(N_FOURIER_TEST + 1):
     z_min = basis.sigma(10.0, 10.0 - N * L_FOURIER)
     z_max = basis.sigma(10.0, 10.0 - (N - 1) * L_FOURIER)
@@ -1303,13 +1472,13 @@ for N in range(N_FOURIER_TEST + 1):
 maybe_save_metrics(check, "metrics.json", {"per_window": quad_results})
 
 # %%
-# Check 07: orthonormality via Gauss quadrature + heatmaps
-check = "07_orthonormality_gauss"
+# Check 08: orthonormality via Gauss quadrature + heatmaps
+check = "08_orthonormality_gauss"
 N_FOURIER_TEST = 20
 quad_order = 100 * N_FOURIER_TEST
 gauss_results = []
 
-print("Check 07: orthonormality (Gauss quadrature)")
+print("Check 08: orthonormality (Gauss quadrature)")
 for N in range(2, N_FOURIER_TEST + 1):
     z_min = basis.sigma(10.0, 10.0 - N * L_FOURIER)
     inner_mat = orthonormality_matrix_gauss(

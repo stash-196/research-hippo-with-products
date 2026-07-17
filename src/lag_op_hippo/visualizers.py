@@ -122,13 +122,18 @@ def plot_reconstructed_signal(
         legend_outside = "below"
     outside_mode = legend_outside if legend_outside else None
 
+    n_title_lines = len(str(title).split("\n")) if title else 0
+    multi_title = n_title_lines >= 2
+
     if figsize is None:
         if outside_mode in ("left", "right"):
-            figsize = (12.5, 5.0)  # wide: side legend + full-width curve
+            figsize = (12.5, 6.2 if multi_title else 5.0)
         elif outside_mode == "below":
-            figsize = (9.0, 5.8)
+            figsize = (9.0, 6.8 if multi_title else 5.8)
         else:
-            figsize = (9.0, 5.0)
+            # Extra height so multi-line math titles (e.g. Σ with limits) clear the axes.
+            h = 6.6 if (multi_title and n_title_lines >= 3) else (6.2 if multi_title else 5.0)
+            figsize = (10.5, h)
 
     fig = plt.figure(figsize=figsize)
     ax = fig.add_subplot(111)
@@ -183,13 +188,31 @@ def plot_reconstructed_signal(
     )
     ax.tick_params(axis="both", labelsize=config["tick_label_fontsize"])
 
+    title_fs = config["axis_label_fontsize"]
+    if multi_title and title_fs is not None:
+        # Smaller multi-line titles so tall math (Σ limits) fits without invading axes.
+        title_fs = max(11, int(title_fs) - 8)
+    # Σ sub/superscripts extend below the title baseline; pad must clear the frame.
+    if multi_title and n_title_lines >= 3:
+        title_pad = 18
+    elif multi_title:
+        title_pad = 28
+    else:
+        title_pad = 6
+
+    title_kwargs = dict(fontsize=title_fs, pad=title_pad)
+    if multi_title:
+        # Extra line spacing so the sum line sits clear of the prose line above.
+        title_kwargs["linespacing"] = 1.55
+
     if paper_ready and title:
-        ax.set_title(title, fontsize=config["axis_label_fontsize"])
+        ax.set_title(title, **title_kwargs)
     elif not paper_ready:
         full_title = (
             title + " " if title else ""
         ) + f"Reconstruction of {data_name} in {domain_name} domain"
-        ax.set_title(full_title, fontsize=config["axis_label_fontsize"])
+        title_kwargs["fontsize"] = title_fs or 12
+        ax.set_title(full_title, **title_kwargs)
     if ylim is not None:
         ax.set_ylim(ylim)
     if xlim is not None:
@@ -236,14 +259,25 @@ def plot_reconstructed_signal(
         columnspacing=1.0,
     )
 
+    # Keep axes lower so tall mathtext titles (Σ with n=0 … N−1) stay outside the frame.
+    if multi_title and n_title_lines >= 3:
+        top = 0.70
+    elif multi_title:
+        top = 0.74
+    else:
+        top = 0.92
     if outside_mode == "left":
-        fig.subplots_adjust(left=0.34, right=0.98, top=0.90, bottom=0.12)
+        fig.subplots_adjust(left=0.34, right=0.98, top=top, bottom=0.12)
         _finalize_figure(save_path=save_path, show=show, save=save, tight=False)
     elif outside_mode == "right":
-        fig.subplots_adjust(left=0.10, right=0.72, top=0.90, bottom=0.12)
+        fig.subplots_adjust(left=0.10, right=0.72, top=top, bottom=0.12)
         _finalize_figure(save_path=save_path, show=show, save=save, tight=False)
     elif outside_mode == "below":
-        fig.subplots_adjust(left=0.10, right=0.98, top=0.90, bottom=0.30)
+        fig.subplots_adjust(left=0.10, right=0.98, top=top, bottom=0.30)
+        _finalize_figure(save_path=save_path, show=show, save=save, tight=False)
+    elif multi_title:
+        # Prefer subplots_adjust over tight_layout: the latter can reclaim the title pad.
+        fig.subplots_adjust(left=0.10, right=0.98, top=top, bottom=0.12)
         _finalize_figure(save_path=save_path, show=show, save=save, tight=False)
     else:
         _finalize_figure(save_path=save_path, show=show, save=save, tight=True)
