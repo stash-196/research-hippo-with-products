@@ -83,7 +83,7 @@ T_LONG = 10.0
 T_REF = T_LONG  # reference time t for warp/measure diagnostic plots
 T_RECON = 3.0  # horizon for Check 03/04 reconstruction (u and û on s∈[0,T_RECON])
 T_DOMAIN = 3.0  # horizon for domain-expansion (paper Fig. 3 style)
-DOMAIN_ZOOM = 20  # samples near the present for lag-shift zoom
+DOMAIN_ZOOM = 10  # samples near the present for lag-shift zoom
 PAPER_READY_PLOTS = True
 
 # =============================================================================
@@ -94,7 +94,7 @@ PAPER_READY_PLOTS = True
 # SAVE_METRICS: write metrics.json / run_config.json alongside figures.
 # ARCHIVE_RUN: copy latest/ → runs/<timestamp>/ after the full script finishes.
 _env_bool = lambda key, default: (os.environ.get(key, "1" if default else "0") != "0")
-SHOW_PLOTS = _env_bool("SHOW_PLOTS", True)
+SHOW_PLOTS = _env_bool("SHOW_PLOTS", False)
 SAVE_PLOTS = _env_bool("SAVE_PLOTS", True)
 SAVE_METRICS = _env_bool("SAVE_METRICS", True)
 # Back-compat alias used by init_dev_output / archive
@@ -462,7 +462,7 @@ def run_projection_roundtrip_validation(
 
     For families without a Gu HiPPO twin (e.g. freq-preserving), pass
     ``hippo_method='legs'`` and set ``title_family`` / labels so the comparison
-    is clearly LagOp-FreqPres vs HiPPO-LegS.
+    is clearly LagOp-FouP vs HiPPO-LegS.
     """
     hippo = HiPPO(method=hippo_method, N=N, dt=dt, T=T)
     vals, u = _cosine_test_signal(T, dt)
@@ -727,6 +727,7 @@ def run_domain_expansion_visualization(
     mode: str = "scale",
     window: float = 1.0,
     a_tilt: str = "legs",
+    tilt: bool = True,
     example_n: int | None = None,
     zoom: int = DOMAIN_ZOOM,
     file_prefix: str | None = None,
@@ -735,10 +736,17 @@ def run_domain_expansion_visualization(
 
     Side-by-side panels (forward | backward).  Each panel shows:
 
-    - unshifted GT at present ``t``: ``φ_n(σ_t(s))``
+    - unshifted GT at present ``t``: ``φ_n(σ_t(s))`` (LagOp eval column)
     - **projected GT** under the shifted warp: ``φ_n(σ_{t±Δ}(s))``
+    - **HiPPO GT (unshifted)**: Gu ``eval_matrix @ e_n`` (same one-hot mode)
     - operator maps: HiPPO ``dA`` / ``dA^{-1}`` and LagOp ``A_∞`` forward /
       backward applied to a one-hot coefficient, then reconstructed
+
+    ``tilt`` (default True) multiplies the LagOp maps by scalar
+    ``e^{±Δt}`` factors, independent of family / ``a_tilt``::
+
+        forward  = (A_∞^T)^+  e^{-Δt}   if tilt else (A_∞^T)^+
+        backward = e^{Δt} A_∞           if tilt else A_∞
 
     ``example_n`` is the coefficient / basis index of the one-hot mode (shown
     in the figure title as n=...). Default is N-2.
@@ -799,10 +807,14 @@ def run_domain_expansion_visualization(
         N, phi_func, sigma_func, sigma_inv_func, dt=dt, verbose=False
     )
     # FouT null mode can make A_∞ singular → pinv for the forward map.
-    # Always apply the scalar e^{±Δt} factors (same for LegS / LegT / FouT / FreqPres).
+    # Optional scalar e^{±Δt} tilt (default on); not tied to model family / a_tilt.
     A_infty_T_inv = np.linalg.pinv(A_infty.T)
-    A_lag_backward = np.exp(dt) * A_infty
-    A_lag_forward = A_infty_T_inv * np.exp(-dt)
+    if tilt:
+        A_lag_backward = np.exp(dt) * A_infty
+        A_lag_forward = A_infty_T_inv * np.exp(-dt)
+    else:
+        A_lag_backward = A_infty
+        A_lag_forward = A_infty_T_inv
 
     dA_hippo = hippo_t.dA.detach().cpu().numpy().astype(np.float64)
     # Optional HiPPO backward: free evolution inverse (best-effort; may be ill-conditioned)
@@ -889,6 +901,8 @@ def run_domain_expansion_visualization(
 
     x = np.asarray(vals_t_plus[sl].detach().cpu().numpy(), dtype=np.float64)
     y_gt = np.asarray(gt_lag[sl].detach().cpu().numpy(), dtype=np.float64)
+    # HiPPO GT = Gu unshifted mode column: flip(pad(eval_matrix @ e_n)).
+    y_gt_hippo = np.asarray(gt_hippo[sl].detach().cpu().numpy(), dtype=np.float64)
     y_fwd_hippo = np.asarray(fwd_hippo[sl].detach().cpu().numpy(), dtype=np.float64)
     y_fwd_lag = np.asarray(fwd_lag[sl].detach().cpu().numpy(), dtype=np.float64)
     y_bwd_hippo = np.asarray(bwd_hippo[sl].detach().cpu().numpy(), dtype=np.float64)
@@ -896,30 +910,58 @@ def run_domain_expansion_visualization(
     y_proj_fwd = gt_proj_fwd[sl]
     y_proj_bwd = gt_proj_bwd[sl]
 
-    fig, axes = plt.subplots(1, 2, figsize=(14.5, 5.4), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(14.5, 5.6), sharey=True)
     ax_fwd, ax_bwd = axes
 
     # GTs in the background; operator forward/backward maps on top.
-    # Distinct style so projected GTs stay readable even when nearly coincident.
+    # Styles: GT φ solid black; projected φ(σ_{t±Δ}) black solid + markers;
+    # HiPPO GT (eval_matrix @ e_n) blue dashed.
+    gt_kw = dict(color="black", linestyle="-", linewidth=lw, zorder=1, alpha=0.9)
     proj_kw = dict(
-        color="#00a86b",  # jade
-        linestyle="-.",
+        color="black",
+        linestyle="-",
         linewidth=lw,
         marker="o",
-        markersize=4.0,
+        markersize=8.0,
         markevery=1,
         zorder=1,
         alpha=0.9,
     )
-    gt_kw = dict(color="black", linewidth=lw, zorder=1, alpha=0.9)
+    hippo_gt_kw = dict(
+        color="tab:blue",
+        linestyle="--",
+        linewidth=lw,
+        zorder=1,
+        alpha=0.9,
+    )
     op_kw = dict(linewidth=lw, zorder=3)
+    # HiPPO operator maps: same style in both panels (blue marker-dash).
+    hippo_op_kw = dict(
+        color="tab:blue",
+        linestyle="-.",
+        linewidth=lw,
+        marker="o",
+        markersize=8.0,
+        markevery=1,
+        zorder=3,
+    )
+    if tilt:
+        lag_fwd_label = r"LagOp $A_\infty\,e^{-\Delta t}$ forward"
+        lag_bwd_label = r"LagOp $e^{\Delta t}A_\infty$ backward"
+    else:
+        lag_fwd_label = r"LagOp $A_\infty$ forward"
+        lag_bwd_label = r"LagOp $A_\infty$ backward"
 
     def _mark_time_interval(ax, t_a: float, t_b: float, label_a: str, label_b: str):
         """Gray band + vertical lines for the lag step ``[t_a, t_b]`` (order-independent)."""
         lo, hi = (t_a, t_b) if t_a <= t_b else (t_b, t_a)
         ax.axvspan(lo, hi, facecolor="0.85", edgecolor="none", zorder=0, alpha=0.7)
-        ax.axvline(t_a, color="0.35", linestyle="-", linewidth=1.2, zorder=2, alpha=0.85)
-        ax.axvline(t_b, color="0.35", linestyle="-", linewidth=1.2, zorder=2, alpha=0.85)
+        ax.axvline(
+            t_a, color="0.35", linestyle="-", linewidth=1.2, zorder=2, alpha=0.85
+        )
+        ax.axvline(
+            t_b, color="0.35", linestyle="-", linewidth=1.2, zorder=2, alpha=0.85
+        )
         # Light labels at the top of the axes (in axes coordinates for y).
         ann_kw = dict(
             xycoords=("data", "axes fraction"),
@@ -944,10 +986,14 @@ def run_domain_expansion_visualization(
     )
     ax_fwd.plot(
         x,
+        y_gt_hippo,
+        **hippo_gt_kw,
+        label=r"GT HiPPO (unshifted)",
+    )
+    ax_fwd.plot(
+        x,
         y_fwd_hippo,
-        color="tab:blue",
-        linestyle="-",
-        **op_kw,
+        **hippo_op_kw,
         label=r"HiPPO $dA$ forward",
     )
     ax_fwd.plot(
@@ -956,9 +1002,9 @@ def run_domain_expansion_visualization(
         color="tab:red",
         linestyle="--",
         **op_kw,
-        label=r"LagOp $A_\infty$ forward",
+        label=lag_fwd_label,
     )
-    ax_fwd.set_title(r"Forward lag ($t\to t+\Delta$)", fontsize=title_fs, pad=8)
+    ax_fwd.set_title(r"Forward lag ($t\to t+\Delta$)", fontsize=title_fs, pad=4)
     ax_fwd.set_xlabel(r"$s$", fontsize=config["axis_label_fontsize"])
     ax_fwd.set_ylabel(
         rf"$\phi_{{{mode_idx}}}(s)$", fontsize=config["axis_label_fontsize"]
@@ -975,10 +1021,14 @@ def run_domain_expansion_visualization(
     )
     ax_bwd.plot(
         x,
+        y_gt_hippo,
+        **hippo_gt_kw,
+        label=r"GT HiPPO (unshifted)",
+    )
+    ax_bwd.plot(
+        x,
         y_bwd_hippo,
-        color="tab:blue",
-        linestyle="-",
-        **op_kw,
+        **hippo_op_kw,
         label=r"HiPPO $dA^{-1}$ backward",
     )
     ax_bwd.plot(
@@ -987,9 +1037,9 @@ def run_domain_expansion_visualization(
         color="tab:red",
         linestyle="--",
         **op_kw,
-        label=r"LagOp $A_\infty$ backward",
+        label=lag_bwd_label,
     )
-    ax_bwd.set_title(r"Backward lag ($t\to t-\Delta$)", fontsize=title_fs, pad=8)
+    ax_bwd.set_title(r"Backward lag ($t\to t-\Delta$)", fontsize=title_fs, pad=4)
     ax_bwd.set_xlabel(r"$s$", fontsize=config["axis_label_fontsize"])
 
     for ax in axes:
@@ -998,6 +1048,8 @@ def run_domain_expansion_visualization(
         ax.legend(fontsize=leg_fs, loc="best", framealpha=0.95)
 
     # Main title: context on line 1; generic lag map on line 2 (A named in legend).
+    # Manual top margin: tight_layout(rect) left a large empty band under the
+    # suptitle; subplots_adjust keeps plot titles close to the main title.
     fig.suptitle(
         rf"{family_label}: domain expansion "
         rf"(basis $n={mode_idx}$, $N={N}$; "
@@ -1005,9 +1057,10 @@ def run_domain_expansion_visualization(
         "\n"
         r"$\psi_{t\pm\Delta}=A\,\psi_t$",
         fontsize=title_fs,
-        y=1.04,
+        y=0.98,
+        linespacing=1.2,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.92), w_pad=2.0)
+    fig.subplots_adjust(left=0.07, right=0.99, bottom=0.12, top=0.84, wspace=0.22)
     io = plot_io(check, f"{prefix}_domain_expansion.png")
     _finalize_figure(
         save_path=io["save_path"],
@@ -1034,6 +1087,7 @@ def run_domain_expansion_visualization(
         "basis_index": mode_idx,
         "N_basis": N,
         "a_tilt": a_tilt,
+        "tilt": bool(tilt),
         "mode": mode,
         "zoom": zoom_n,
         "t_now": t_now,
@@ -1216,7 +1270,9 @@ plot_hippo_lagop_geometry_comparison(
 # %%
 # Check 02: domain expansion / lag shift of a high-order basis mode
 # (paper Fig. 3 style; adapted from demo.run_basis_visualization)
-# GT = unshifted mode; forward = HiPPO dA (solid) vs LagOp A_∞ (dashed).
+# Matched pairs: LagOp-LegS/LegT/FouT vs Gu HiPPO twin; LagOp-FouP vs HiPPO-FouT
+# (FouP = frequency-preserving Fourier; no Gu twin — FouT is the closer baseline).
+# tilt=True: LagOp maps × e^{±Δt} (independent of family).
 check = "02_domain_expansion"
 run_domain_expansion_visualization(
     check=check,
@@ -1233,6 +1289,7 @@ run_domain_expansion_visualization(
     sigma_inv_deriv_func=sigma_inv_deriv,
     mode="scale",
     a_tilt="legs",
+    tilt=True,
     file_prefix="legs",
 )
 run_domain_expansion_visualization(
@@ -1251,6 +1308,7 @@ run_domain_expansion_visualization(
     mode="translate",
     window=WINDOW_L,
     a_tilt="translate",
+    tilt=True,
     file_prefix="legt",
 )
 run_domain_expansion_visualization(
@@ -1269,7 +1327,28 @@ run_domain_expansion_visualization(
     mode="translate",
     window=WINDOW_L,
     a_tilt="translate",
+    tilt=True,
     file_prefix="fout",
+)
+# FouP (frequency-preserving Fourier) has no Gu twin → compare lag maps / eval vs HiPPO-FouT.
+run_domain_expansion_visualization(
+    check=check,
+    family_label="FouP vs FouT",
+    hippo_method="fourier",
+    N=N_DOMAIN_EXPANSION,
+    dt=DT,
+    T=T_DOMAIN,
+    phi_func=basis.phi,
+    phi_deriv_func=basis.phi_deriv,
+    sigma_func=basis.sigma,
+    sigma_deriv_func=basis.sigma_deriv,
+    sigma_inv_func=basis.sigma_inv,
+    sigma_inv_deriv_func=basis.sigma_inv_deriv,
+    mode="scale",
+    window=L_FOURIER,
+    a_tilt="legs",
+    tilt=True,
+    file_prefix="foup",
 )
 
 
@@ -1300,16 +1379,16 @@ lag_legs_recon = LagHiPPO(
 )
 lag_legt_recon = make_legt_model(N=N_LEGT, dt=DT, T=T_RECON, window_length=WINDOW_L)
 lag_fout_recon = make_fout_model(N=N_FOUT, dt=DT, T=T_RECON, window_length=WINDOW_L)
-# Freq-preserving has no Gu HiPPO twin: compare against HiPPO-LegS at the same N.
-# Use N_LEGS so capacity matches the LegS Check 03/04 runs.
+# FouP (frequency-preserving Fourier) has no Gu HiPPO twin: compare vs HiPPO-LegS
+# at the same N. Use N_LEGS so capacity matches the LegS Check 03/04 runs.
 # derive_A_from='gen' (not A_∞): A_∞ + ZOH is unstable on this cosine scan and
 # yields NaN c_T; gen matches the stable LagHiPPO-LegS reconstruction path.
-freq_basis_recon = make_frequency_preserving_basis(
+foup_basis_recon = make_frequency_preserving_basis(
     alpha=ALPHA,
     window_length=L_FOURIER,
     eps=EPS,
 )
-lag_freq_recon = make_frequency_preserving_model(
+lag_foup_recon = make_frequency_preserving_model(
     N=N_LEGS,
     dt=DT,
     T=T_RECON,
@@ -1353,16 +1432,16 @@ run_projection_roundtrip_validation(
     T=T_RECON,
 )
 run_projection_roundtrip_validation(
-    check="03_freq_proj_roundtrip",
-    lag_model=lag_freq_recon,
-    hippo_method="legs",  # no Gu freq-pres twin; baseline = HiPPO-LegS
-    basis=freq_basis_recon,
+    check="03_foup_proj_roundtrip",
+    lag_model=lag_foup_recon,
+    hippo_method="legs",  # no Gu FouP twin; baseline = HiPPO-LegS
+    basis=foup_basis_recon,
     N=N_LEGS,
     dt=DT,
     T=T_RECON,
-    lag_label="LagOp-FreqPres",
+    lag_label="LagOp-FouP",
     hippo_label="HiPPO-LegS",
-    title_family="freq-pres vs legs",
+    title_family="FouP vs legs",
 )
 
 # %%
@@ -1395,16 +1474,16 @@ run_translated_ssm_validation(
     T=T_RECON,
 )
 run_translated_ssm_validation(
-    check="04_freq_vs_hippo",
-    lag_model=lag_freq_recon,
-    hippo_method="legs",  # no Gu freq-pres twin; baseline = HiPPO-LegS
-    basis=freq_basis_recon,
+    check="04_foup_vs_hippo",
+    lag_model=lag_foup_recon,
+    hippo_method="legs",  # no Gu FouP twin; baseline = HiPPO-LegS
+    basis=foup_basis_recon,
     N=N_LEGS,
     dt=DT,
     T=T_RECON,
-    lag_label="LagOp-FreqPres",
+    lag_label="LagOp-FouP",
     hippo_label="HiPPO-LegS",
-    title_family="freq-pres vs legs",
+    title_family="FouP vs legs",
 )
 
 # %%
