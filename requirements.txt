@@ -1,5 +1,7 @@
 einops>=0.8.0
 matplotlib>=3.9.2
+matplotlib-inline>=0.1.7
+ipython>=8.0.0
 numpy>=1.26.4
 scipy>=1.14.1
 seaborn>=0.13.2
