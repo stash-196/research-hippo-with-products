@@ -75,13 +75,40 @@ class FrequencyPreservingBasis:
         h_n = (1.0 - self.config.alpha) * (self.config.alpha ** (n - 1))
         return self.config.window_length / h_n
 
+    def _amplitude(self, m):
+        """Orthonormal amplitude w.r.t. dz on [0, 1].
+
+        Fix 2026-11-19. Previously ``psi`` used ``sqrt(1/h_n)`` with the window
+        index taken from ``s``; but ``phi`` passes ``s = sigma_inv(0, z) <= 0`` and
+        ``_window_index`` clips negative input to window 1, so the amplitude was
+        the constant ``1/sqrt(h_1)`` and the cos/sin modes lacked ``sqrt(2)``
+        (Gram = diag(1.25, 0.625, ...)). Because dz = (h_n/L) dtau on window n and
+        sum_n h_n = 1, an L-periodic Fourier mode has
+        int_0^1 phi^2 dz = mean(psi^2) over one period. A per-window amplitude
+        sqrt(1/h_n) would make that sum diverge, so the orthonormal choice is
+        window-independent: 1 for the constant mode, sqrt(2) for cos/sin.
+        """
+        return 1.0 if m == 0 else np.sqrt(2.0)
+
+    def z_breakpoints(self, dt: float = 0.0):
+        """Kinks of the warp in z: window edges alpha^n (>= eps), plus their
+        images under a lag shift dt (kinks of the A_infty integrand)."""
+        a, L, eps = self.config.alpha, self.config.window_length, self.config.eps
+        n_max = int(np.floor(np.log(eps) / np.log(a)))
+        edges = a ** np.arange(1, n_max + 1, dtype=np.float64)
+        pts = [edges, [eps]]
+        if dt > 0:
+            pts.append(self.f_tau(L * np.arange(1, n_max + 1) - dt))
+        return np.unique(np.concatenate(pts))
+
+    def window_index_from_lag(self, tau):
+        """Window index n >= 1 of lookback tau = t - s >= 0 (tau, not s)."""
+        return self._window_index(np.abs(np.asarray(tau, dtype=np.float64)))
+
     def psi(self, n, s):
         k = n + 1
         m = k // 2
-        tau = np.asarray(s)
-        n_win = self._window_index(tau)
-        h_n = (1.0 - self.config.alpha) * (self.config.alpha ** (n_win - 1))
-        amp = np.sqrt(1.0 / h_n)
+        amp = self._amplitude(m)
         arg = 2.0 * np.pi * m * np.asarray(s) / self.config.window_length
         if k % 2 == 1:
             return amp * np.cos(arg)
@@ -94,10 +121,7 @@ class FrequencyPreservingBasis:
     def psi_deriv(self, n, s):
         k = n + 1
         m = k // 2
-        tau = np.asarray(s)
-        n_win = self._window_index(tau)
-        h_n = (1.0 - self.config.alpha) * (self.config.alpha ** (n_win - 1))
-        amp = np.sqrt(1.0 / h_n)
+        amp = self._amplitude(m)
         arg = 2.0 * np.pi * m * np.asarray(s) / self.config.window_length
         darg_ds = 2.0 * np.pi * m / self.config.window_length
         if k % 2 == 1:
@@ -182,8 +206,24 @@ def make_frequency_preserving_model(
     derive_A_from: str = "infty",
     input_hold: str = "zoh",
     quad_order: int | None = None,
+    a_tilt: str = "translate",
+    edge_kappa: float | None = None,
 ):
-    """Build a LagHiPPO model configured with frequency-preserving basis."""
+    """Build a LagHiPPO model configured with frequency-preserving basis.
+
+    ``a_tilt='translate'`` (default since 2026-11-19) uses the FouP edge closure
+    A = A_gen - (kappa/L) phi(1)phi(1)^T, B = (kappa/L) phi(1) with
+    kappa = 2(1-alpha)/(1+alpha) (``foup_edge_kappa``). The measure jumps by a
+    factor alpha at every window edge, giving
+        dc/dt = A_gen c + (phi(1)/L)[h_1 u(t) - (1-alpha) sum_n h_n u(t-nL)]
+    (short form valid because the FouP A_gen is skew in z, as for FouT; for a
+    general basis use dc/dt = -(A_gen^T + G_{h'}) c + edge terms, see LagHiPPO);
+    closing the edge samples with the Fourier mid-point value of the
+    alpha-weighted fold yields that kappa (kappa -> 2, i.e. FouT, as alpha -> 0).
+    Pass ``a_tilt='legs'`` for the pre-2026-11-19 default.
+    A_gen / A_infty use composite Gauss split at the window edges in z
+    (plain Gauss over the kinks left a spurious Re(lambda) ~ +5e-3 mode).
+    """
     basis = make_frequency_preserving_basis(
         alpha=alpha,
         window_length=window_length,
@@ -201,8 +241,17 @@ def make_frequency_preserving_model(
         T=T,
         derive_A_from=derive_A_from,
         input_hold=input_hold,
-        quad_order=quad_order,
+        quad_order=max(200 * N, 64) if quad_order is None else quad_order,
+        a_tilt=a_tilt,
+        window=window_length,
+        edge_kappa=foup_edge_kappa(alpha) if edge_kappa is None else edge_kappa,
+        z_breakpoints=basis.z_breakpoints(dt),
     )
+
+
+def foup_edge_kappa(alpha: float) -> float:
+    """Edge-closure coefficient kappa = 2(1-alpha)/(1+alpha) of the FouP measure."""
+    return 2.0 * (1.0 - alpha) / (1.0 + alpha)
 
 
 __all__ = [
@@ -219,4 +268,5 @@ __all__ = [
     "phi_deriv_fourier",
     "make_frequency_preserving_basis",
     "make_frequency_preserving_model",
+    "foup_edge_kappa",
 ]
