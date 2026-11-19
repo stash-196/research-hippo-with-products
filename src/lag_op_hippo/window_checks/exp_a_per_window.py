@@ -48,7 +48,7 @@ def routes_for_window(n):
                   ("fixed A_gen, rank-1: A_gen-2phi(1)phi(1)^T", A_gen_fixed - 2 * np.outer(gz, gz))):
         dA, dB = bilinear(A / L, sh * fout_input_vector(N) / L)
         R[nm] = (dA, dB, dly, Eg)
-    R["A_inf repo map pinv(A_inf^T)e^{-dt}, B_zoh(repo)"] = (_safe_pinv(A_inf_fout.T) * np.exp(-DT),
+    R["A_inf repo map pinv(A_inf^T)e^{-dt}, B_zoh(repo)"] = (np.linalg.pinv(A_inf_fout.T) * np.exp(-DT),
                                                              sh * B_zoh_repo_fout, dly, Eg)
     R["A_inf^T, strip B"] = (A_inf_fout.T, sh * B_strip_fout, dly, Eg)
     # repo FouP psi restricted to window n (bug amplitude 1/sqrt(h1) vs intended 1/sqrt(h_n))
