@@ -15,9 +15,14 @@ library itself (branch exp/legt-fout-fix-window-checks; pre-fix state is tag
   kappa = 2(1-alpha)/(1+alpha).
 
 Background (unchanged):
-   dc/dt = A_gen c + (1/L)[phi(1) u(t) - phi(0) u(t-L)]        (exact, translate window)
+   Exact (translate window, h = measure density = 1/L, G_{h'} = Gram under h'):
+   dc/dt = -(A_gen^T + G_{h'}) c + h(1) phi(1) u(t) - h(0) phi(0) u(t-L)
+         = A_gen c + h(1) phi(1)(u(t) - phi(1)^T c) - h(0) phi(0)(u(t-L) - phi(0)^T c).
+   (The short form dc/dt = A_gen c + (1/L)[phi(1)u(t) - phi(0)u(t-L)] is exact only for
+   FouT, where A_gen is skew and G_{h'} = 0; for LegT it is wrong, FD error ~8.)
    LegT : u(t-L) ~ phi(0)^T c            -> kappa = 1
    FouT : u(t-L) ~ 2 phi(0)^T c - u(t)   -> kappa = 2  (Fourier mid-point; phi(0)=phi(1))
+   giving A = A_gen - (kappa/L) phi(1)phi(1)^T, B = (kappa/L) phi(1) in both cases.
    FouP : measure jumps by alpha per window edge -> kappa = 2(1-alpha)/(1+alpha).
 
 What stays only here: ``FrequencyPreservingBasisFixed``, a FouP basis in Gu's

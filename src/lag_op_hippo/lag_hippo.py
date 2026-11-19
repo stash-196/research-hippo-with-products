@@ -282,10 +282,18 @@ class LagHiPPO(nn.Module):
         z_breakpoints: optional warp kinks in z for composite quadrature of
             A_gen / A_infty (None = original single-interval Gauss).
 
-        Exact relation behind 'translate' (z=1 present, z=0 oldest edge):
-            dc/dt = A_gen c + (1/L)[phi(1) u(t) - phi(0) u(t-L)].
-        LegT closes u(t-L) ~ phi(0)^T c; FouT uses the Fourier mid-point value
-        u(t-L) ~ 2 phi(0)^T c - u(t) (phi(0)=phi(1)).
+        Exact relation behind 'translate' (z=1 present, z=0 oldest edge; h = measure
+        density, h = 1/L on the window, G_{h'} = Gram of phi under h'):
+            dc/dt = -(A_gen^T + G_{h'}) c + h(1) phi(1) u(t) - h(0) phi(0) u(t-L)
+                  = A_gen c + h(1) phi(1) (u(t) - phi(1)^T c)
+                            - h(0) phi(0) (u(t-L) - phi(0)^T c)
+        (integration by parts). The shorter form
+            dc/dt = A_gen c + (1/L)[phi(1) u(t) - phi(0) u(t-L)]
+        holds only when A_gen is skew and G_{h'} = 0 (FouT); it is NOT exact for
+        LegT (finite-difference error ~8). Closures of the edge sample:
+        LegT u(t-L) ~ phi(0)^T c                 -> A = A_gen - (1/L) phi(1)phi(1)^T, B = phi(1)/L;
+        FouT u(t-L) ~ 2 phi(0)^T c - u(t) (mid-point, phi(0)=phi(1))
+                                                 -> A = A_gen - (2/L) phi(1)phi(1)^T, B = 2 phi(1)/L.
         """
         super().__init__()
         self.N = N

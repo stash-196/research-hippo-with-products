@@ -215,7 +215,9 @@ def make_frequency_preserving_model(
     A = A_gen - (kappa/L) phi(1)phi(1)^T, B = (kappa/L) phi(1) with
     kappa = 2(1-alpha)/(1+alpha) (``foup_edge_kappa``). The measure jumps by a
     factor alpha at every window edge, giving
-        dc/dt = A_gen c + (phi(1)/L)[h_1 u(t) - (1-alpha) sum_n h_n u(t-nL)];
+        dc/dt = A_gen c + (phi(1)/L)[h_1 u(t) - (1-alpha) sum_n h_n u(t-nL)]
+    (short form valid because the FouP A_gen is skew in z, as for FouT; for a
+    general basis use dc/dt = -(A_gen^T + G_{h'}) c + edge terms, see LagHiPPO);
     closing the edge samples with the Fourier mid-point value of the
     alpha-weighted fold yields that kappa (kappa -> 2, i.e. FouT, as alpha -> 0).
     Pass ``a_tilt='legs'`` for the pre-2026-11-19 default.
