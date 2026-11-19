@@ -21,6 +21,8 @@ from scipy.linalg import expm, logm
 from lag_op_hippo.hippo_by_original_authors import HiPPO
 from lag_op_hippo.lag_hippo import (
     LagHiPPO,
+    compute_A_gen,
+    compute_B_delta,
     compute_A_infty,
     get_gauss_quadrature,
     vectorized_basis,
@@ -48,27 +50,29 @@ def compute_A_gen_for_basis(
     sigma_inv_deriv_func: Callable,
     quad_order: int | None = None,
 ) -> np.ndarray:
-    """A_gen using the *provided* σ_inv' (not the module-level LegS default)."""
-    if quad_order is None:
-        quad_order = max(2 * N, 4 * N if N > 20 else 2 * N)
-    n_vals = np.arange(N)
-    z_nodes, z_weights = get_gauss_quadrature(quad_order, 0, 1)
-    phi_vals = vectorized_basis(phi_func, n_vals, z_nodes)
-    phi_deriv_vals = vectorized_basis(phi_deriv_func, n_vals, z_nodes)
-    lag_deriv_factor = 1.0 / np.asarray(
-        sigma_inv_deriv_func(0.0, z_nodes), dtype=np.float64
-    )
-    return np.einsum(
-        "i,ik,il->kl", z_weights, phi_vals, lag_deriv_factor[:, None] * phi_deriv_vals
-    )
+    """A_gen using the *provided* sigma_inv' (now the same as lag_hippo.compute_A_gen)."""
+    return compute_A_gen(N, phi_func, phi_deriv_func, quad_order=quad_order,
+                         sigma_inv_deriv_func=sigma_inv_deriv_func)
 
 
-def tilt_continuous_A(A_gen: np.ndarray, a_tilt: str) -> np.ndarray:
+EDGE_KAPPA = {"legt": 1.0, "fourier": 2.0}
+
+
+def _phi1(N: int, phi_func: Callable) -> np.ndarray:
+    return compute_B_delta(N, phi_func)
+
+
+def tilt_continuous_A(A_gen: np.ndarray, a_tilt: str, phi1: np.ndarray | None = None,
+                      kappa: float = 1.0, window: float = 1.0) -> np.ndarray:
     A_gen = np.asarray(A_gen, dtype=np.float64)
     N = A_gen.shape[0]
     if a_tilt == "legs":
         return -(A_gen + np.eye(N)).T
     if a_tilt == "translate":
+        if phi1 is None:
+            raise ValueError("a_tilt='translate' needs phi1 = phi(1) for the edge term")
+        return A_gen - (kappa / window) * np.outer(phi1, phi1)
+    if a_tilt == "translate_legacy":
         return -A_gen
     if a_tilt == "raw":
         return A_gen.copy()
@@ -159,7 +163,7 @@ def run_A_map_catalog_check(
     A_gen = compute_A_gen_for_basis(
         N, phi_func, phi_deriv_func, sigma_inv_deriv_func
     )
-    A_tilt = tilt_continuous_A(A_gen, a_tilt_default)
+    A_tilt = tilt_continuous_A(A_gen, a_tilt_default, phi1=_phi1(N, phi_func), kappa=EDGE_KAPPA.get(hippo_method, 1.0))
     dA_from_gen = cont2discrete_A(A_tilt, dt)
 
     catalog = build_A_infty_map_catalog(A_infty, dt)
@@ -272,7 +276,7 @@ def run_dt_sweep_check(
     A_gen = compute_A_gen_for_basis(
         N, phi_func, phi_deriv_func, sigma_inv_deriv_func
     )
-    A_tilt = tilt_continuous_A(A_gen, a_tilt)
+    A_tilt = tilt_continuous_A(A_gen, a_tilt, phi1=_phi1(N, phi_func), kappa=EDGE_KAPPA.get(hippo_method, 1.0))
 
     series = {
         "dt": [],
@@ -459,7 +463,7 @@ def run_fd_oracle_A_check(
     A_gen = compute_A_gen_for_basis(
         N, phi_func, phi_deriv_func, sigma_inv_deriv_func
     )
-    A_tilt = tilt_continuous_A(A_gen, a_tilt)
+    A_tilt = tilt_continuous_A(A_gen, a_tilt, phi1=_phi1(N, phi_func), kappa=EDGE_KAPPA.get(hippo_method, 1.0))
     dA_c2d = cont2discrete_A(A_tilt, dt)
     A_infty = compute_A_infty(
         N, phi_func, sigma_func, sigma_inv_func, dt=dt, verbose=False
@@ -574,7 +578,7 @@ def run_tilt_ablation_check(
 
     rows = []
     for tilt in tilts:
-        A = tilt_continuous_A(A_gen, tilt)
+        A = tilt_continuous_A(A_gen, tilt, phi1=_phi1(N, phi_func), kappa=EDGE_KAPPA.get(hippo_method, 1.0))
         row = {
             "a_tilt": tilt,
             "rel_A_vs_gu": _rel_fro(A, A_h),
@@ -676,7 +680,7 @@ def run_eigen_structure_check(
     A_gen = compute_A_gen_for_basis(
         N, phi_func, phi_deriv_func, sigma_inv_deriv_func
     )
-    A_lag = tilt_continuous_A(A_gen, a_tilt)
+    A_lag = tilt_continuous_A(A_gen, a_tilt, phi1=_phi1(N, phi_func), kappa=EDGE_KAPPA.get(hippo_method, 1.0))
     A_inf = compute_A_infty(
         N, phi_func, sigma_func, sigma_inv_func, dt=dt, verbose=False
     )
