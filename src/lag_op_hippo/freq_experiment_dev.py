@@ -51,6 +51,9 @@ from lag_op_hippo.lag_hippo_translated import (
     make_legt_basis,
     make_legt_model,
 )
+from lag_op_hippo.freq_A_discrepancy_checks import (
+    run_all_discrepancy_checks_for_family,
+)
 import matplotlib.pyplot as plt
 
 from lag_op_hippo.visualizers import (
@@ -81,7 +84,7 @@ WINDOW_L = 1.0
 DT = 0.001
 T_LONG = 10.0
 T_REF = T_LONG  # reference time t for warp/measure diagnostic plots
-T_RECON = 3.0  # horizon for Check 03/04 reconstruction (u and û on s∈[0,T_RECON])
+T_RECON = 3.0  # horizon for Check 02.01/02.02 reconstruction (u and û on s∈[0,T_RECON])
 T_DOMAIN = 3.0  # horizon for domain-expansion (paper Fig. 3 style)
 DOMAIN_ZOOM = 10  # samples near the present for lag-shift zoom
 PAPER_READY_PLOTS = True
@@ -387,7 +390,7 @@ def plot_sigma_warp_diagnostics(
 
 
 def _cosine_test_signal(T: float, dt: float) -> tuple[np.ndarray, np.ndarray]:
-    """Shared test input for Check 03/04: cos so u≈1 near the present."""
+    """Shared test input for Check 02.01/02.02: cos so u≈1 near the present."""
     vals = np.arange(0.0, T, dt)
     u = np.cos(2.0 * np.pi * 3.0 * vals)
     return vals, u
@@ -415,7 +418,7 @@ def _project_via_eval_matrix(eval_matrix, u_absolute: np.ndarray) -> np.ndarray:
     return c
 
 
-# Legend / metrics names for Check 03–04 reconstruction plots.
+# Legend / metrics names for Check 02.01–02.02 reconstruction plots.
 _HIPPO_METHOD_LEGEND = {
     "legs": "HiPPO-LegS",
     "legt": "HiPPO-LegT",
@@ -1118,10 +1121,10 @@ def run_domain_expansion_visualization(
 
 
 # %%
-# Check 01.0: sigma warp and roundtrip (frequency-preserving)
+# Check 01.01.0: sigma warp and roundtrip (frequency-preserving)
 # No original HiPPO counterpart — LagOp geometry only.
 plot_sigma_warp_diagnostics(
-    check="01_sigma_warp",
+    check="01_01_0_sigma_warp",
     sigma_fn=basis.sigma,
     sigma_deriv_fn=basis.sigma_deriv,
     sigma_inv_fn=basis.sigma_inv,
@@ -1141,16 +1144,16 @@ freq_model = make_frequency_preserving_model(
     eps=EPS,
 )
 plot_hippo_lagop_geometry_comparison(
-    check="01_sigma_warp",
+    check="01_01_0_sigma_warp",
     hippo_model=None,
     lag_model=freq_model,
     family_label="Freq-preserving",
 )
 
 
-# Check 01.1: sigma warp + measure/eval geometry (LegS: HiPPO vs LagOp)
+# Check 01.01.1: sigma warp + measure/eval geometry (LegS: HiPPO vs LagOp)
 plot_sigma_warp_diagnostics(
-    check="01_1_sigma_warp_lagop",
+    check="01_01_1_sigma_warp_lagop",
     sigma_fn=sigma,
     sigma_deriv_fn=sigma_deriv,
     sigma_inv_fn=sigma_inv,
@@ -1179,17 +1182,17 @@ lag_legs = LagHiPPO(
     T=T_LONG,
 )
 plot_hippo_lagop_geometry_comparison(
-    check="01_1_sigma_warp_lagop",
+    check="01_01_1_sigma_warp_lagop",
     hippo_model=hippo_legs,
     lag_model=lag_legs,
     family_label="LegS",
 )
 
 
-# Check 01.2: sigma warp + measure/eval geometry (LegT: HiPPO vs LagOp)
+# Check 01.01.2: sigma warp + measure/eval geometry (LegT: HiPPO vs LagOp)
 legt_basis = make_legt_basis(window_length=WINDOW_L)
 plot_sigma_warp_diagnostics(
-    check="01_2_sigma_warp_legt",
+    check="01_01_2_sigma_warp_legt",
     sigma_fn=legt_basis.sigma,
     sigma_deriv_fn=legt_basis.sigma_deriv,
     sigma_inv_fn=legt_basis.sigma_inv,
@@ -1220,17 +1223,17 @@ plot_sigma_warp_diagnostics(
 hippo_legt = HiPPO(method="legt", N=N_LEGT, dt=DT, T=WINDOW_L)
 lag_legt = make_legt_model(N=N_LEGT, dt=DT, T=WINDOW_L, window_length=WINDOW_L)
 plot_hippo_lagop_geometry_comparison(
-    check="01_2_sigma_warp_legt",
+    check="01_01_2_sigma_warp_legt",
     hippo_model=hippo_legt,
     lag_model=lag_legt,
     family_label="LegT",
 )
 
 
-# Check 01.3: sigma warp + measure/eval geometry (FouT: HiPPO vs LagOp)
+# Check 01.01.3: sigma warp + measure/eval geometry (FouT: HiPPO vs LagOp)
 fout_basis = make_fout_basis(window_length=WINDOW_L)
 plot_sigma_warp_diagnostics(
-    check="01_3_sigma_warp_fout",
+    check="01_01_3_sigma_warp_fout",
     sigma_fn=fout_basis.sigma,
     sigma_deriv_fn=fout_basis.sigma_deriv,
     sigma_inv_fn=fout_basis.sigma_inv,
@@ -1261,19 +1264,19 @@ plot_sigma_warp_diagnostics(
 hippo_fout = HiPPO(method="fourier", N=N_FOUT, dt=DT, T=WINDOW_L)
 lag_fout = make_fout_model(N=N_FOUT, dt=DT, T=WINDOW_L, window_length=WINDOW_L)
 plot_hippo_lagop_geometry_comparison(
-    check="01_3_sigma_warp_fout",
+    check="01_01_3_sigma_warp_fout",
     hippo_model=hippo_fout,
     lag_model=lag_fout,
     family_label="FouT",
 )
 
 # %%
-# Check 02: domain expansion / lag shift of a high-order basis mode
+# Check 01.02: domain expansion / lag shift of a high-order basis mode
 # (paper Fig. 3 style; adapted from demo.run_basis_visualization)
 # Matched pairs: LagOp-LegS/LegT/FouT vs Gu HiPPO twin; LagOp-FouP vs HiPPO-FouT
 # (FouP = frequency-preserving Fourier; no Gu twin — FouT is the closer baseline).
 # tilt=True: LagOp maps × e^{±Δt} (independent of family).
-check = "02_domain_expansion"
+check = "01_02_domain_expansion"
 run_domain_expansion_visualization(
     check=check,
     family_label="LegS",
@@ -1353,7 +1356,7 @@ run_domain_expansion_visualization(
 
 
 # %%
-# Shared basis adapter + models for Check 03 (projection) and Check 04 (recurrence).
+# Shared basis adapter + models for Check 02.01 (projection) and Check 02.02 (recurrence).
 class _LegSBasisAdapter:
     phi = staticmethod(phi)
     phi_deriv = staticmethod(phi_deriv)
@@ -1365,7 +1368,7 @@ class _LegSBasisAdapter:
 
 legs_basis = _LegSBasisAdapter()
 
-# Shared LagOp models for Check 03 (projection) and Check 04 (recurrence).
+# Shared LagOp models for Check 02.01 (projection) and Check 02.02 (recurrence).
 lag_legs_recon = LagHiPPO(
     N=N_LEGS,
     phi_func=phi,
@@ -1380,7 +1383,7 @@ lag_legs_recon = LagHiPPO(
 lag_legt_recon = make_legt_model(N=N_LEGT, dt=DT, T=T_RECON, window_length=WINDOW_L)
 lag_fout_recon = make_fout_model(N=N_FOUT, dt=DT, T=T_RECON, window_length=WINDOW_L)
 # FouP (frequency-preserving Fourier) has no Gu HiPPO twin: compare vs HiPPO-LegS
-# at the same N. Use N_LEGS so capacity matches the LegS Check 03/04 runs.
+# at the same N. Use N_LEGS so capacity matches the LegS Check 02.01/02.02 runs.
 # derive_A_from='gen' (not A_∞): A_∞ + ZOH is unstable on this cosine scan and
 # yields NaN c_T; gen matches the stable LagHiPPO-LegS reconstruction path.
 foup_basis_recon = make_frequency_preserving_basis(
@@ -1401,11 +1404,11 @@ lag_foup_recon = make_frequency_preserving_model(
 )
 
 # %%
-# Check 03: Eval-matrix projection roundtrip (no recurrence)
+# Check 02.01: Eval-matrix projection roundtrip (no recurrence)
 #   c = lstsq(Eval, flip(u)),  û = reconstruct(c)
-# Isolates projection stability vs the recurrent scan in Check 04.
+# Isolates projection stability vs the recurrent scan in Check 02.02.
 run_projection_roundtrip_validation(
-    check="03_legs_proj_roundtrip",
+    check="02_01_legs_proj_roundtrip",
     lag_model=lag_legs_recon,
     hippo_method="legs",
     basis=legs_basis,
@@ -1414,7 +1417,7 @@ run_projection_roundtrip_validation(
     T=T_RECON,
 )
 run_projection_roundtrip_validation(
-    check="03_legt_proj_roundtrip",
+    check="02_01_legt_proj_roundtrip",
     lag_model=lag_legt_recon,
     hippo_method="legt",
     basis=legt_basis,
@@ -1423,7 +1426,7 @@ run_projection_roundtrip_validation(
     T=T_RECON,
 )
 run_projection_roundtrip_validation(
-    check="03_fout_proj_roundtrip",
+    check="02_01_fout_proj_roundtrip",
     lag_model=lag_fout_recon,
     hippo_method="fourier",
     basis=fout_basis,
@@ -1432,7 +1435,7 @@ run_projection_roundtrip_validation(
     T=T_RECON,
 )
 run_projection_roundtrip_validation(
-    check="03_foup_proj_roundtrip",
+    check="02_01_foup_proj_roundtrip",
     lag_model=lag_foup_recon,
     hippo_method="legs",  # no Gu FouP twin; baseline = HiPPO-LegS
     basis=foup_basis_recon,
@@ -1445,9 +1448,9 @@ run_projection_roundtrip_validation(
 )
 
 # %%
-# Check 04: recurrence scan → c_T → reconstruct (was Check 03)
+# Check 02.02: recurrence scan → c_T → reconstruct (was Check 03)
 run_translated_ssm_validation(
-    check="04_legs_vs_hippo",
+    check="02_02_legs_vs_hippo",
     lag_model=lag_legs_recon,
     hippo_method="legs",
     basis=legs_basis,
@@ -1456,7 +1459,7 @@ run_translated_ssm_validation(
     T=T_RECON,
 )
 run_translated_ssm_validation(
-    check="04_legt_vs_hippo",
+    check="02_02_legt_vs_hippo",
     lag_model=lag_legt_recon,
     hippo_method="legt",
     basis=legt_basis,
@@ -1465,7 +1468,7 @@ run_translated_ssm_validation(
     T=T_RECON,
 )
 run_translated_ssm_validation(
-    check="04_fout_vs_hippo",
+    check="02_02_fout_vs_hippo",
     lag_model=lag_fout_recon,
     hippo_method="fourier",
     basis=fout_basis,
@@ -1474,7 +1477,7 @@ run_translated_ssm_validation(
     T=T_RECON,
 )
 run_translated_ssm_validation(
-    check="04_foup_vs_hippo",
+    check="02_02_foup_vs_hippo",
     lag_model=lag_foup_recon,
     hippo_method="legs",  # no Gu FouP twin; baseline = HiPPO-LegS
     basis=foup_basis_recon,
@@ -1487,8 +1490,75 @@ run_translated_ssm_validation(
 )
 
 # %%
-# Check 05: recurrent reconstruction (freq-preserving vs standard)
-check = "05_recurrent_reconstruction"
+# Checks 05–09: A / free-map discrepancy diagnostics (per Gu-matched family)
+#   05 map catalog A_∞ → M vs Gu dA
+#   06 Δt sweep asymptotics
+#   07 FD oracle A_emp from re-anchored φ(σ_{t+Δ})
+#   08 continuous-A tilt + discretization ablations
+#   09 eigen / structure of A and dA
+# Uses N_LEGS/LEGT/FOUT (same capacity as Check 02.01/02.02 recon).
+_N_DIAG = N_LEGS
+_T_DIAG = T_RECON
+for _fam in (
+    dict(
+        family_key="legs",
+        family_label="LegS",
+        hippo_method="legs",
+        N=_N_DIAG,
+        phi_func=phi,
+        phi_deriv_func=phi_deriv,
+        sigma_func=sigma,
+        sigma_deriv_func=sigma_deriv,
+        sigma_inv_func=sigma_inv,
+        sigma_inv_deriv_func=sigma_inv_deriv,
+        a_tilt="legs",
+        mode="scale",
+        window=1.0,
+    ),
+    dict(
+        family_key="legt",
+        family_label="LegT",
+        hippo_method="legt",
+        N=N_LEGT,
+        phi_func=legt_basis.phi,
+        phi_deriv_func=legt_basis.phi_deriv,
+        sigma_func=legt_basis.sigma,
+        sigma_deriv_func=legt_basis.sigma_deriv,
+        sigma_inv_func=legt_basis.sigma_inv,
+        sigma_inv_deriv_func=legt_basis.sigma_inv_deriv,
+        a_tilt="translate",
+        mode="translate",
+        window=WINDOW_L,
+    ),
+    dict(
+        family_key="fout",
+        family_label="FouT",
+        hippo_method="fourier",
+        N=N_FOUT,
+        phi_func=fout_basis.phi,
+        phi_deriv_func=fout_basis.phi_deriv,
+        sigma_func=fout_basis.sigma,
+        sigma_deriv_func=fout_basis.sigma_deriv,
+        sigma_inv_func=fout_basis.sigma_inv,
+        sigma_inv_deriv_func=fout_basis.sigma_inv_deriv,
+        a_tilt="translate",
+        mode="translate",
+        window=WINDOW_L,
+    ),
+):
+    run_all_discrepancy_checks_for_family(
+        **_fam,
+        dt=DT,
+        T=_T_DIAG,
+        paper_ready=PAPER_READY_PLOTS,
+        plot_io_fn=plot_io,
+        save_metrics_fn=maybe_save_metrics,
+    )
+
+# %%
+# Check 02.03: recurrent reconstruction (freq-preserving vs standard)
+# (formerly Check 05)
+check = "02_03_recurrent_reconstruction"
 vals = np.arange(0.0, T_LONG, DT)
 u = np.sin(2 * np.pi * 2 * vals)
 u_torch = torch.tensor(u, dtype=torch.float)
@@ -1619,8 +1689,9 @@ maybe_save_metrics(
 )
 
 # %%
-# Check 06: direct projection-reconstruction (non-recurrent)
-check = "06_projection_reconstruction"
+# Check 02.04: direct projection-reconstruction (non-recurrent)
+# (formerly Check 06)
+check = "02_04_projection_reconstruction"
 T = 1.0
 dt = 0.001
 proj_vals = np.arange(0.0, T, dt)
@@ -1679,8 +1750,9 @@ maybe_save_metrics(
 )
 
 # %%
-# Check 07: orthonormality via adaptive quadrature (per-window intervals)
-check = "07_orthonormality_quad"
+# Check 04.01: orthonormality via adaptive quadrature (per-window intervals)
+# (formerly Check 07)
+check = "04_01_orthonormality_quad"
 
 
 def test_orthonormality_quad(phi_func, N, Z=(0.0, 1.0), atol=1e-8):
@@ -1701,7 +1773,7 @@ def test_orthonormality_quad(phi_func, N, Z=(0.0, 1.0), atol=1e-8):
 
 N_FOURIER_TEST = 5
 quad_results = []
-print("Check 07: orthonormality (adaptive quadrature)")
+print("Check 04.01: orthonormality (adaptive quadrature)")
 for N in range(N_FOURIER_TEST + 1):
     z_min = basis.sigma(10.0, 10.0 - N * L_FOURIER)
     z_max = basis.sigma(10.0, 10.0 - (N - 1) * L_FOURIER)
@@ -1721,13 +1793,14 @@ for N in range(N_FOURIER_TEST + 1):
 maybe_save_metrics(check, "metrics.json", {"per_window": quad_results})
 
 # %%
-# Check 08: orthonormality via Gauss quadrature + heatmaps
-check = "08_orthonormality_gauss"
+# Check 04.02: orthonormality via Gauss quadrature + heatmaps
+# (formerly Check 08)
+check = "04_02_orthonormality_gauss"
 N_FOURIER_TEST = 20
 quad_order = 100 * N_FOURIER_TEST
 gauss_results = []
 
-print("Check 08: orthonormality (Gauss quadrature)")
+print("Check 04.02: orthonormality (Gauss quadrature)")
 for N in range(2, N_FOURIER_TEST + 1):
     z_min = basis.sigma(10.0, 10.0 - N * L_FOURIER)
     inner_mat = orthonormality_matrix_gauss(
