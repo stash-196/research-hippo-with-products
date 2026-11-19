@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,15 @@ def init_dev_output(save_artifacts: bool = True) -> Path | None:
     """
     if not save_artifacts:
         return None
+
+    # Opt-in (2026-11-19): write a run into a fresh directory instead of latest/.
+    override = os.environ.get("FREQ_DEV_OUTPUT_DIR")
+    if override:
+        out = Path(override).resolve()
+        if out.exists():
+            raise FileExistsError(f"{out} exists; refusing to overwrite a past run")
+        out.mkdir(parents=True)
+        return out
 
     base = repo_root() / "outputs" / "freq_dev"
     out = base / "latest"
