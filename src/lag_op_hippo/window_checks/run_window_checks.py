@@ -1,7 +1,12 @@
 """Run the 2026-11-19 window checks into a NEW timestamped folder:
     outputs/freq_dev/window_checks/<YYYYmmdd_HHMMSS>/
 Usage (from repo root):  python -m lag_op_hippo.window_checks.run_window_checks [step0 A B C]
-Never writes into outputs/freq_dev/latest or outputs/freq_dev/runs."""
+Never writes into outputs/freq_dev/latest or outputs/freq_dev/runs.
+
+Labels saying "repo ..." mean "the lag_op_hippo library at the commit recorded in
+run_config.json". Up to tag pre-libfix-2026-11-19 (e.g. run 20261119_172639) that is
+the unfixed library; after the 2026-11-19 library fix the "repo" routes ARE the fixed
+builders, so compare against 20261119_172639 for the before values."""
 import datetime, json, os, runpy, subprocess, sys
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
