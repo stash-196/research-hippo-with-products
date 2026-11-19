@@ -180,6 +180,8 @@ def _make_lag_model(
     derive_A_from: str = "gen",
     input_hold: str = "delta",
     quad_order: int | None = None,
+    edge_kappa: float = 1.0,
+    a_tilt: str = "translate",
 ) -> LagHiPPO:
     return LagHiPPO(
         N=N,
@@ -196,8 +198,9 @@ def _make_lag_model(
         quad_order=quad_order,
         mode="translate",
         window=basis.L,
-        a_tilt="translate",
+        a_tilt=a_tilt,
         B_vec=B_vec,
+        edge_kappa=edge_kappa,
     )
 
 
@@ -218,10 +221,11 @@ def make_legt_model(
         N=N,
         dt=dt,
         T=T,
-        B_vec=legt_input_vector(N),
+        B_vec=None,  # edge rule: B = phi(1)/L  (= legt_input_vector(N) for L=1)
         derive_A_from=derive_A_from,
         input_hold=input_hold,
-        quad_order=quad_order,
+        quad_order=quad_order if quad_order is not None else max(200 * N, 64),
+        edge_kappa=1.0,
     )
 
 
@@ -243,10 +247,11 @@ def make_fout_model(
         N=N,
         dt=dt,
         T=T,
-        B_vec=fout_input_vector(N),
+        B_vec=None,  # edge rule: B = 2 phi(1)/L  (= fout_input_vector(N) for L=1)
         derive_A_from=derive_A_from,
         input_hold=input_hold,
-        quad_order=quad_order,
+        quad_order=quad_order if quad_order is not None else max(200 * N, 64),
+        edge_kappa=2.0,
     )
 
 
