@@ -73,6 +73,31 @@ def get_gauss_quadrature(order, a=0, b=1):
     return z, w
 
 
+def get_composite_gauss_quadrature(order, breakpoints, a=0.0, b=1.0, min_order=8):
+    """Composite Gauss-Legendre on [a, b] split at ``breakpoints``.
+
+    Used for piecewise warps (e.g. FouP), whose integrands have kinks at the
+    window edges; plain Gauss over [0, 1] converges only algebraically there.
+    ``order`` is the total node budget, spread evenly over the segments.
+    """
+    pts = np.unique(np.clip(np.concatenate([[a, b], np.asarray(breakpoints, float)]), a, b))
+    nseg = len(pts) - 1
+    per = max(int(np.ceil(order / nseg)), min_order)
+    zs, ws = [], []
+    for lo, hi in zip(pts[:-1], pts[1:]):
+        if hi - lo <= 0:
+            continue
+        z, w = get_gauss_quadrature(per, lo, hi)
+        zs.append(z); ws.append(w)
+    return np.concatenate(zs), np.concatenate(ws)
+
+
+def _quadrature(order, z_breakpoints, a=0.0, b=1.0):
+    if z_breakpoints is None:
+        return get_gauss_quadrature(order, a, b)
+    return get_composite_gauss_quadrature(order, z_breakpoints, a, b)
+
+
 def vectorized_basis(basis_func, n_values, z_values):
     """Vectorized evaluation of basis function."""
     k = len(z_values)
@@ -84,14 +109,15 @@ def vectorized_basis(basis_func, n_values, z_values):
 
 
 def compute_A_infty(
-    N, phi_func, sigma_func, sigma_inv_func, dt=1.0, quad_order=None, verbose=False
+    N, phi_func, sigma_func, sigma_inv_func, dt=1.0, quad_order=None, verbose=False,
+    z_breakpoints=None,
 ):
-    """Compute A_infty using Gauss quadrature."""
+    """Compute A_infty using Gauss quadrature (composite if ``z_breakpoints``)."""
     if quad_order is None:
         quad_order = max(2 * N, 4 * N if N > 20 else 2 * N)
     n_vals = np.arange(N)
     start_time = time.time()
-    z_nodes_a, z_weights_a = get_gauss_quadrature(quad_order, 0, 1)
+    z_nodes_a, z_weights_a = _quadrature(quad_order, z_breakpoints)
     eval_n = vectorized_basis(phi_func, n_vals, z_nodes_a)
     # Composition σ_0 ∘ σ_Δ^{-1}: use the *provided* warp, not the module-level LegS σ.
     warped_z = sigma_func(0, sigma_inv_func(dt, z_nodes_a))
@@ -106,16 +132,36 @@ def compute_A_infty(
     return A_infty
 
 
-def compute_A_gen(N, phi_func, phi_deriv_func, dt=1.0, quad_order=None, verbose=False):
-    """Compute A_gen using Gauss quadrature."""
+def compute_A_gen(
+    N,
+    phi_func,
+    phi_deriv_func,
+    dt=1.0,
+    quad_order=None,
+    verbose=False,
+    sigma_inv_deriv_func=None,
+    z_breakpoints=None,
+):
+    """Compute A_gen using Gauss quadrature.
+
+    ``z_breakpoints`` (optional) switches to composite Gauss split at the warp's
+    kinks (FouP window edges alpha^n); default None keeps the original nodes.
+
+    ``sigma_inv_deriv_func`` is the warp's d(sigma^{-1})/dz. It defaults to the
+    LegS (exponential) warp for backward compatibility; LagHiPPO passes the
+    model's own warp (fix 2026-11-19: previously the LegS warp was always used,
+    which biased A_gen for every non-exponential warp).
+    """
+    if sigma_inv_deriv_func is None:
+        sigma_inv_deriv_func = sigma_inv_deriv
     if quad_order is None:
         quad_order = max(2 * N, 4 * N if N > 20 else 2 * N)
     n_vals = np.arange(N)
     start_time = time.time()
-    z_nodes, z_weights = get_gauss_quadrature(quad_order, 0, 1)
+    z_nodes, z_weights = _quadrature(quad_order, z_breakpoints)
     phi_vals = vectorized_basis(phi_func, n_vals, z_nodes)
     phi_deriv_vals = vectorized_basis(phi_deriv_func, n_vals, z_nodes)
-    lag_deriv_factor = 1 / sigma_inv_deriv(0, z_nodes)
+    lag_deriv_factor = 1 / np.asarray(sigma_inv_deriv_func(0, z_nodes), dtype=np.float64)
     A_gen = np.einsum(
         "i,ik,il->kl", z_weights, phi_vals, lag_deriv_factor[:, None] * phi_deriv_vals
     )
@@ -126,13 +172,18 @@ def compute_A_gen(N, phi_func, phi_deriv_func, dt=1.0, quad_order=None, verbose=
     return A_gen
 
 
-def compute_B_zoh(N, phi_func, dt, quad_order=None, verbose=False):
-    """Compute B_zoh using Gauss quadrature."""
+def compute_B_zoh(N, phi_func, dt, quad_order=None, verbose=False, sigma_func=None):
+    """Compute B_zoh = int_{sigma_0(-dt)}^{1} phi(z) dz (newest input strip) by Gauss quadrature.
+
+    ``sigma_func`` is the model's warp; the strip's lower limit is
+    ``sigma_func(0, -dt)``. Default (None) keeps the LegS value ``e^{-dt}``
+    (fix 2026-11-19: the e^{-dt} limit was used for every warp).
+    """
     if quad_order is None:
         quad_order = 2 * N
     n_vals = np.arange(N)
     start_time = time.time()
-    z_min = np.exp(-dt)
+    z_min = np.exp(-dt) if sigma_func is None else float(np.asarray(sigma_func(0.0, -dt)))
     z_max = 1.0
     z_nodes_b, z_weights_b = get_gauss_quadrature(quad_order, z_min, z_max)
     basis_evals_b = vectorized_basis(phi_func, n_vals, z_nodes_b)
@@ -210,6 +261,8 @@ class LagHiPPO(nn.Module):
         quad_order=None,
         a_tilt="legs",
         B_vec=None,
+        edge_kappa=None,
+        z_breakpoints=None,
     ):
         """
         N: the order of the HiPPO projection
@@ -220,8 +273,19 @@ class LagHiPPO(nn.Module):
         window: For 'translate' mode, the fixed truncation window (normalized to 1 by default to match HiPPO-LegT).
         a_tilt: How to map A_gen to continuous A.
             'legs' maps to -(A_gen + I).T (HiPPO-LegS),
-            'translate' maps to -A_gen (HiPPO-LegT / FouT),
+            'translate' maps to A_gen - (kappa/window) phi(1)phi(1)^T (truncated-window
+                edge closure; kappa=1 LegT, 2 FouT, 2(1-alpha)/(1+alpha) FouP),
+                with B = (kappa/window) phi(1) unless B_vec is given,
+            'translate_legacy' maps to -A_gen (pre-2026-11-19 'translate'),
             'raw' uses A_gen directly.
+        edge_kappa: kappa for a_tilt='translate' (default 1.0).
+        z_breakpoints: optional warp kinks in z for composite quadrature of
+            A_gen / A_infty (None = original single-interval Gauss).
+
+        Exact relation behind 'translate' (z=1 present, z=0 oldest edge):
+            dc/dt = A_gen c + (1/L)[phi(1) u(t) - phi(0) u(t-L)].
+        LegT closes u(t-L) ~ phi(0)^T c; FouT uses the Fourier mid-point value
+        u(t-L) ~ 2 phi(0)^T c - u(t) (phi(0)=phi(1)).
         """
         super().__init__()
         self.N = N
@@ -251,22 +315,31 @@ class LagHiPPO(nn.Module):
             self.phi_deriv_func,
             dt=self.dt,
             quad_order=self.quad_order,
+            sigma_inv_deriv_func=self.sigma_inv_deriv_func,
+            z_breakpoints=z_breakpoints,
         )
-        B = (
-            np.asarray(B_vec, dtype=np.float64)
-            if B_vec is not None
-            else compute_B_delta(N, self.phi_func)
-        )
+        self.A_gen = A_gen
+        phi_1 = compute_B_delta(N, self.phi_func)
+        self.edge_kappa = 1.0 if edge_kappa is None else float(edge_kappa)
         if a_tilt == "legs":
             A_HiPPO = -(A_gen + np.eye(N)).T
         elif a_tilt == "translate":
+            A_HiPPO = A_gen - (self.edge_kappa / window) * np.outer(phi_1, phi_1)
+        elif a_tilt == "translate_legacy":
             A_HiPPO = -A_gen
         elif a_tilt == "raw":
             A_HiPPO = A_gen
         else:
             raise ValueError(
-                f"Unknown a_tilt={a_tilt!r}; expected 'legs', 'translate', or 'raw'."
+                f"Unknown a_tilt={a_tilt!r}; expected 'legs', 'translate', "
+                "'translate_legacy', or 'raw'."
             )
+        if B_vec is not None:
+            B = np.asarray(B_vec, dtype=np.float64)
+        elif a_tilt == "translate":
+            B = (self.edge_kappa / window) * phi_1
+        else:
+            B = phi_1
 
         self.A = A_HiPPO
         self.B = B
@@ -288,15 +361,32 @@ class LagHiPPO(nn.Module):
                 self.sigma_inv_func,
                 dt=self.dt,
                 quad_order=self.quad_order,
+                z_breakpoints=z_breakpoints,
             )
-            A_infty_corrected = np.linalg.inv(A_infty.T) * np.exp(-dt)
+            # inv for well-conditioned A_infty (LegS, unchanged); pinv when singular
+            # (e.g. FouT's null sin(0) mode).
+            if np.linalg.cond(A_infty) < 1e12:
+                A_infty_corrected = np.linalg.inv(A_infty.T) * np.exp(-dt)
+            else:
+                A_infty_corrected = np.linalg.pinv(A_infty.T) * np.exp(-dt)
             dA = A_infty_corrected
             print("\nLagOp HiPPO: Using A_infty for discretized A")
 
         # Use B_zoh if specified. (Our end-to-end B)
-        if input_hold == "zoh":
+        if input_hold == "zoh" and a_tilt == "translate" and derive_A_from == "gen":
+            # Edge-closed (A, B) already contain the closure's share of u(t); the
+            # strip integral would drop it. Use the exact ZOH of the continuous pair.
+            _, dB, _, _, _ = signal.cont2discrete(
+                (A_HiPPO, B[:, None], C, D), dt=dt, method="zoh"
+            )
+            dB = dB[:, 0]
+        elif input_hold == "zoh":
             B_zoh = compute_B_zoh(
-                N, self.phi_func, dt=self.dt, quad_order=self.quad_order
+                N,
+                self.phi_func,
+                dt=self.dt,
+                quad_order=self.quad_order,
+                sigma_func=self.sigma_func,
             )
             dB = B_zoh
             print("\nLagOp HiPPO: Using ZOH for discretized B:")
@@ -534,7 +624,11 @@ class LagHiPPOSplit(nn.Module):
         B_blocks = []
         for i, N_split in enumerate(split_sizes):
             A_gen_i = compute_A_gen(
-                N_split, self.phi_func, self.phi_deriv_func, dt=self.dt
+                N_split,
+                self.phi_func,
+                self.phi_deriv_func,
+                dt=self.dt,
+                sigma_inv_deriv_func=self.sigma_inv_deriv_funcs[i],
             )
             B_i = compute_B_delta(N_split, self.phi_func)
             A_gen_blocks.append(A_gen_i)
