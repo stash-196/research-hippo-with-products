@@ -323,6 +323,66 @@ for N in NS:
 open(os.path.join(OUT, "results_tables.md"), "w").write("\n".join(md_lines))
 log("tables written")
 
+# ------------------------------------------------------------------ measure omega(tau) and orthonormality check
+# The measure is taken from the library object, not from a hand formula:
+#   LagHiPPO.measure (lag_hippo.py:430) -> lambda x: self.sigma_deriv_func(0, -x)  [stored as model.measure_fn, line 354;
+#   model.measure is the same function evaluated on the lag grid, line 408/433]
+#   FouP: sigma_deriv_func = FrequencyPreservingBasis.sigma_deriv (lag_hippo_freq.py:53) = h_n / L, h_n=(1-alpha)alpha^(n-1)
+#   LegS: sigma_deriv_func = lag_hippo.sigma_deriv (lag_hippo.py:21) = exp(s-t) -> exp(-tau)
+# omega(tau) = dz/dtau, so  int_0^inf omega dtau = int_0^1 dz = 1 for both models: already on a common scale.
+MEAS = {k: mods[k].measure_fn for k in ("FouP", "LegS")}
+lag_fine = np.linspace(0.0, T_MEM, 30001)
+for k in MEAS:   # the stored array must equal the function on the library lag grid
+    assert np.allclose(mods[k].measure, MEAS[k](np.arange(NLAG) * DT))
+hand = {"FouP": lambda t: ((1 - ALPHA) * ALPHA ** (np.floor(t / WL))) / WL, "LegS": lambda t: np.exp(-t)}
+meas_vs_hand = {k: float(np.max(np.abs(MEAS[k](lag_fine) - hand[k](lag_fine)))) for k in MEAS}
+
+
+def gram_with_measure(model, N, tau_max, h=0.01, order=16):
+    edges = np.unique(np.round(np.concatenate([np.arange(0, tau_max, h), [tau_max], np.arange(0, tau_max, 1.0)]), 12))
+    edges = edges[edges <= tau_max]
+    x, w = roots_legendre(order)
+    lo, hi = edges[:-1], edges[1:]
+    tau = (lo[:, None] + (hi - lo)[:, None] * (x[None] + 1) / 2).ravel()
+    wt = ((hi - lo)[:, None] * w[None] / 2).ravel() * model.measure_fn(tau)
+    P = vectorized_basis(model.phi_func, np.arange(N), model.sigma_func(0, -tau))
+    return np.einsum("i,ik,il->kl", wt, P, P)
+
+
+ortho = {}
+mods64 = build_models(64)
+for N, mm_ in ((16, mods), (64, mods64)):
+    for k, tmax in (("FouP", 11.0), ("LegS", 40.0)):
+        G = gram_with_measure(mm_[k], N, tmax)
+        Gt = gram_with_measure(mm_[k], N, T_MEM)
+        ortho[f"{k}|N={N}"] = dict(max_abs_G_minus_I_full_range=float(np.max(np.abs(G - np.eye(N)))), tau_max=tmax,
+                                  max_abs_G_minus_I_truncated_0_3L=float(np.max(np.abs(Gt - np.eye(N)))))
+mass = {}
+for k in MEAS:
+    xq, wq = roots_legendre(64)
+    ed = np.arange(0, 4)
+    mass[k] = [float(sum(np.sum(MEAS[k](a + (b - a) * (xq + 1) / 2) * wq * (b - a) / 2) for a, b in [(e, e + 1)])) for e in range(3)]
+meas_info = dict(measure_vs_hand_formula_max_abs_diff=meas_vs_hand, window_masses=mass,
+                 mass_in_0_3L={k: float(sum(v)) for k, v in mass.items()}, orthonormality=ortho,
+                 source=dict(function="LagHiPPO.measure_fn = sigma_deriv_func(0,-tau) (lag_hippo.py:354,430)",
+                             FouP="FrequencyPreservingBasis.sigma_deriv (lag_hippo_freq.py:53)", LegS="lag_hippo.sigma_deriv (lag_hippo.py:21)"))
+json.dump(meas_info, open(os.path.join(OUT, "measure_and_orthonormality.json"), "w"), indent=1)
+log("measure / orthonormality:", json.dumps(meas_info, indent=1))
+
+
+def measure_panel(ax, legend=True):
+    ax.semilogy(lag_fine, MEAS["FouP"](lag_fine), color=COL["FouP"], lw=1.6,
+                label=r"FouP $\omega=h_n/L$ (library `sigma_deriv`): window masses " + "/".join(f"{m_:.3g}" for m_ in mass["FouP"]))
+    ax.semilogy(lag_fine, MEAS["LegS"](lag_fine), color=COL["LegS"], lw=1.6,
+                label=r"LegS $\omega=e^{-\tau}$ (library `sigma_deriv`): masses " + "/".join(f"{m_:.3g}" for m_ in mass["LegS"]))
+    for e in (1, 2):
+        ax.axvline(e, color="gray", ls=":", lw=0.8)
+    ax.set_ylim(0.02, 3.0)
+    ax.set_ylabel(r"$\omega(\tau)=\mathrm{d}z/\mathrm{d}\tau$")
+    ax.set_title(r"measure from the library (normalised: $\int_0^\infty\omega\,\mathrm{d}\tau=1$ for both)", fontsize=8)
+    if legend: ax.legend(fontsize=6.5, loc="upper right")
+
+
 # ------------------------------------------------------------------ plots
 git = lambda *a: subprocess.run(["git", "-C", REPO, *a], capture_output=True, text=True).stdout.strip()
 json.dump(dict(timestamp=ts, git_commit=git("rev-parse", "HEAD"), git_branch=git("rev-parse", "--abbrev-ref", "HEAD"),
@@ -360,7 +420,9 @@ fig.tight_layout(); save(fig, "0_lorenz_signal_and_spectrum.png")
 
 
 def ex_plot(route, fname, title_route):
-    fig, axs = plt.subplots(3, 2, figsize=(14, 9), sharey=True)
+    fig = plt.figure(figsize=(14, 11.5))
+    gs = fig.add_gridspec(4, 2, height_ratios=[3, 3, 3, 2.4], hspace=0.28)
+    axs = np.array([[fig.add_subplot(gs[i, j]) for j in range(2)] for i in range(3)])
     for i, tf in enumerate(TF):
         for j, N in enumerate((16, 64)):
             ax = axs[i, j]
@@ -371,19 +433,25 @@ def ex_plot(route, fname, title_route):
             for e in (1, 2):
                 ax.axvline(e, color="gray", ls=":", lw=0.8)
             ax.set(title=fr"$N={N}$, final time $s={tf}$", ylim=(-3.2, 3.2))
-            if i == 2: ax.set_xlabel(r"lag $\tau$ [$L$ = 3 Lorenz t.u.]  (0 = present)")
+            ax.tick_params(labelbottom=False)
             if j == 0: ax.set_ylabel("u")
             ax.legend(fontsize=7, loc="upper right")
-    fig.suptitle(f"History reconstruction of Lorenz $x(t)$, trajectory 0: FouP vs LegS, {title_route}", y=1.0)
-    fig.tight_layout(); save(fig, fname)
+    for j in range(2):
+        am = fig.add_subplot(gs[3, j], sharex=axs[2, j])
+        measure_panel(am, legend=True)
+        am.set_xlabel(r"lag $\tau$ [$L$ = 3 Lorenz t.u.]  (0 = present; dotted = FouP window edges)", fontsize=9)
+    fig.suptitle(f"History reconstruction of Lorenz $x(t)$, trajectory 0: FouP vs LegS, {title_route} (bottom: each model's measure)", y=0.93)
+    save(fig, fname)
 
-ex_plot("rec", "1a_history_recurrence.png", "recurrence")
-ex_plot("ip", "1b_history_inner_product_projection.png", "inner-product projection")
-ex_plot("lsq", "1c_history_lsq_oracle.png", "lag-window least squares (oracle)")
+ex_plot("rec", "1a_history_recurrence_with_measure.png", "recurrence")
+ex_plot("ip", "1b_history_inner_product_projection_with_measure.png", "inner-product projection")
+ex_plot("lsq", "1c_history_lsq_oracle_with_measure.png", "lag-window least squares (oracle)")
 
 # Fig 2: error vs lag
 bl = (np.arange(NLAG // BIN) + 0.5) * BIN * DT
-fig, axs = plt.subplots(2, 2, figsize=(13, 8), sharex=True)
+fig = plt.figure(figsize=(13, 10.5))
+gs = fig.add_gridspec(3, 2, height_ratios=[3, 3, 2.2], hspace=0.22)
+axs = np.array([[fig.add_subplot(gs[i, j]) for j in range(2)] for i in range(2)])
 for ax, N in zip(axs.ravel(), NS):
     for name in ("FouP", "LegS"):
         for route, ls_, lab in (("rec", "-", "recurrence"), ("ip", "--", "inner-prod. proj."), ("lsq", ":", "lsq oracle")):
@@ -393,9 +461,14 @@ for ax, N in zip(axs.ravel(), NS):
         ax.axvline(e, color="gray", ls=":", lw=0.8)
     ax.set(title=fr"$N={N}$", ylabel=r"squared error (bins of $0.05L$)")
     ax.legend(fontsize=7, ncol=2, loc="lower right")
-for ax in axs[1]: ax.set_xlabel(r"lag $\tau$ [$L$ = 3 Lorenz t.u.]  (0 = present; dotted = FouP window edges)")
-fig.suptitle(r"Error vs lag, Lorenz $x(t)$: mean over 8 trajectories $\times$ final times $s\in\{3,4.5,6\}$", y=1.0)
-fig.tight_layout(); save(fig, "2_error_vs_lag.png")
+    ax.set_xlim(0, T_MEM)
+    ax.tick_params(labelbottom=False)
+am = fig.add_subplot(gs[2, :], sharex=axs[1, 0])
+measure_panel(am)
+am.set_xlim(0, T_MEM)
+am.set_xlabel(r"lag $\tau$ [$L$ = 3 Lorenz t.u.]  (0 = present; dotted = FouP window edges)")
+fig.suptitle(r"Error vs lag, Lorenz $x(t)$: mean over 8 trajectories $\times$ final times $s\in\{3,4.5,6\}$ (bottom: measure $\omega(\tau)$)", y=0.93)
+save(fig, "2_error_vs_lag_with_measure.png")
 
 fig, ax = plt.subplots(1, 2, figsize=(12, 4))
 for k, (N, tf) in enumerate(((16, 6.0), (64, 6.0))):
