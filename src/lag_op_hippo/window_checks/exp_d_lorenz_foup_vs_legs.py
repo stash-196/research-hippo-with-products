@@ -371,16 +371,19 @@ log("measure / orthonormality:", json.dumps(meas_info, indent=1))
 
 
 def measure_panel(ax, legend=True):
-    ax.semilogy(lag_fine, MEAS["FouP"](lag_fine), color=COL["FouP"], lw=1.6,
+    ax.semilogy(-lag_fine, MEAS["FouP"](lag_fine), color=COL["FouP"], lw=1.6,
                 label=r"FouP $\omega=h_n/L$ (library `sigma_deriv`): window masses " + "/".join(f"{m_:.3g}" for m_ in mass["FouP"]))
-    ax.semilogy(lag_fine, MEAS["LegS"](lag_fine), color=COL["LegS"], lw=1.6,
+    ax.semilogy(-lag_fine, MEAS["LegS"](lag_fine), color=COL["LegS"], lw=1.6,
                 label=r"LegS $\omega=e^{-\tau}$ (library `sigma_deriv`): masses " + "/".join(f"{m_:.3g}" for m_ in mass["LegS"]))
     for e in (1, 2):
-        ax.axvline(e, color="gray", ls=":", lw=0.8)
-    ax.set_ylim(0.02, 3.0)
+        ax.axvline(-e, color="gray", ls=":", lw=0.8)
+    for xc, tx in ((-0.5, "window 1\n(most recent)"), (-1.5, "window 2"), (-2.5, "window 3\n(oldest)")):
+        ax.text(xc, 0.0095, tx, ha="center", va="bottom", fontsize=7, color="0.35")
+    ax.set_xlim(-T_MEM, 0)
+    ax.set_ylim(0.008, 3.0)
     ax.set_ylabel(r"$\omega(\tau)=\mathrm{d}z/\mathrm{d}\tau$")
     ax.set_title(r"measure from the library (normalised: $\int_0^\infty\omega\,\mathrm{d}\tau=1$ for both)", fontsize=8)
-    if legend: ax.legend(fontsize=6.5, loc="upper right")
+    if legend: ax.legend(fontsize=6.5, loc="upper left")
 
 
 # ------------------------------------------------------------------ plots
@@ -426,29 +429,29 @@ def ex_plot(route, fname, title_route):
     for i, tf in enumerate(TF):
         for j, N in enumerate((16, 64)):
             ax = axs[i, j]
-            ax.plot(lag, ex_x[("H", tf)], "k", lw=1.0, label="true history")
+            ax.plot(-lag, ex_x[("H", tf)], "k", lw=1.0, label="true history")
             for name, c_ in (("FouP", "tab:red"), ("LegS", "tab:blue")):
                 mse_ = res_x[(N, name, route, tf)]["mse"][0]
-                ax.plot(lag, ex_x[(N, name, route, tf)], color=c_, lw=1.0, label=f"{name} ({title_route}), MSE={mse_:.3g}")
+                ax.plot(-lag, ex_x[(N, name, route, tf)], color=c_, lw=1.0, label=f"{name} ({title_route}), MSE={mse_:.3g}")
             for e in (1, 2):
-                ax.axvline(e, color="gray", ls=":", lw=0.8)
-            ax.set(title=fr"$N={N}$, final time $s={tf}$", ylim=(-3.2, 3.2))
+                ax.axvline(-e, color="gray", ls=":", lw=0.8)
+            ax.set(title=fr"$N={N}$, final time $s={tf}$", ylim=(-3.2, 3.2), xlim=(-T_MEM, 0))
             ax.tick_params(labelbottom=False)
             if j == 0: ax.set_ylabel("u")
-            ax.legend(fontsize=7, loc="upper right")
+            ax.legend(fontsize=7, loc="upper left")
     for j in range(2):
         am = fig.add_subplot(gs[3, j], sharex=axs[2, j])
         measure_panel(am, legend=True)
-        am.set_xlabel(r"lag $\tau$ [$L$ = 3 Lorenz t.u.]  (0 = present; dotted = FouP window edges)", fontsize=9)
+        am.set_xlabel(r"time relative to now $-\tau$ [$L$ = 3 Lorenz t.u.];  0 = now, $-3L$ = oldest", fontsize=9)
     fig.suptitle(f"History reconstruction of Lorenz $x(t)$, trajectory 0: FouP vs LegS, {title_route} (bottom: each model's measure)", y=0.93)
     save(fig, fname)
 
-ex_plot("rec", "1a_history_recurrence_with_measure.png", "recurrence")
-ex_plot("ip", "1b_history_inner_product_projection_with_measure.png", "inner-product projection")
-ex_plot("lsq", "1c_history_lsq_oracle_with_measure.png", "lag-window least squares (oracle)")
+ex_plot("rec", "1a_history_recurrence_with_measure_pastleft.png", "recurrence")
+ex_plot("ip", "1b_history_inner_product_projection_with_measure_pastleft.png", "inner-product projection")
+ex_plot("lsq", "1c_history_lsq_oracle_with_measure_pastleft.png", "lag-window least squares (oracle)")
 
 # Fig 2: error vs lag
-bl = (np.arange(NLAG // BIN) + 0.5) * BIN * DT
+bl = -(np.arange(NLAG // BIN) + 0.5) * BIN * DT   # time relative to now (past on the left)
 fig = plt.figure(figsize=(13, 10.5))
 gs = fig.add_gridspec(3, 2, height_ratios=[3, 3, 2.2], hspace=0.22)
 axs = np.array([[fig.add_subplot(gs[i, j]) for j in range(2)] for i in range(2)])
@@ -458,17 +461,17 @@ for ax, N in zip(axs.ravel(), NS):
             v = np.mean([res_x[(N, name, route, tf)]["bins"] for tf in TF], axis=(0, 2))
             ax.semilogy(bl, v, ls_, color=COL[name], lw=1.4, label=f"{name} {lab}")
     for e in (1, 2):
-        ax.axvline(e, color="gray", ls=":", lw=0.8)
+        ax.axvline(-e, color="gray", ls=":", lw=0.8)
     ax.set(title=fr"$N={N}$", ylabel=r"squared error (bins of $0.05L$)")
-    ax.legend(fontsize=7, ncol=2, loc="lower right")
-    ax.set_xlim(0, T_MEM)
+    ax.legend(fontsize=7, ncol=2, loc="lower left")
+    ax.set_xlim(-T_MEM, 0)
     ax.tick_params(labelbottom=False)
 am = fig.add_subplot(gs[2, :], sharex=axs[1, 0])
 measure_panel(am)
-am.set_xlim(0, T_MEM)
-am.set_xlabel(r"lag $\tau$ [$L$ = 3 Lorenz t.u.]  (0 = present; dotted = FouP window edges)")
-fig.suptitle(r"Error vs lag, Lorenz $x(t)$: mean over 8 trajectories $\times$ final times $s\in\{3,4.5,6\}$ (bottom: measure $\omega(\tau)$)", y=0.93)
-save(fig, "2_error_vs_lag_with_measure.png")
+am.set_xlim(-T_MEM, 0)
+am.set_xlabel(r"time relative to now, $-\tau$ [$L$ = 3 Lorenz t.u.]  (−3L = oldest, 0 = now; dotted = FouP window edges)")
+fig.suptitle(r"Error vs lag (past on left), Lorenz $x(t)$: mean over 8 trajectories $\times$ final times $s\in\{3,4.5,6\}$ (bottom: measure $\omega(\tau)$)", y=0.93)
+save(fig, "2_error_vs_lag_with_measure_pastleft.png")
 
 fig, ax = plt.subplots(1, 2, figsize=(12, 4))
 for k, (N, tf) in enumerate(((16, 6.0), (64, 6.0))):
